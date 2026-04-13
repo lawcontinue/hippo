@@ -1,0 +1,11 @@
+services:
+  hippo:
+    build: .
+    ports:
+      - "11434:8000"
+    volumes:
+      - ~/.hippo/models:/models
+    environment:
+      - HIPPO_API_KEY=${HIPPO_API_KEY:-}
+      - HIPPO_MODELS_DIR=/models
+    restart: unless-stopped

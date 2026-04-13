@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hippo-llm"
+version = "0.1.0"
+description = "Hippo 🦛 — Lightweight local LLM manager"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "llama-cpp-python>=0.2.70",
+    "pyyaml>=6.0",
+    "typer>=0.9",
+    "requests>=2.31",
+]
+
+[project.scripts]
+hippo = "hippo.cli:app"

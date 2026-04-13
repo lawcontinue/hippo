@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+hippo/__init__.py
+hippo/api.py
+hippo/cli.py
+hippo/config.py
+hippo/downloader.py
+hippo/model_manager.py
+hippo_llm.egg-info/PKG-INFO
+hippo_llm.egg-info/SOURCES.txt
+hippo_llm.egg-info/dependency_links.txt
+hippo_llm.egg-info/entry_points.txt
+hippo_llm.egg-info/requires.txt
+hippo_llm.egg-info/top_level.txt

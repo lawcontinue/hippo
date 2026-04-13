@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: hippo-llm
+Version: 0.1.0
+Summary: Hippo 🦛 — Lightweight local LLM manager
+Requires-Python: >=3.10
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn>=0.29
+Requires-Dist: llama-cpp-python>=0.2.70
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: typer>=0.9
+Requires-Dist: requests>=2.31

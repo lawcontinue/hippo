@@ -19,12 +19,17 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
 from hippo.downloader import pull_model
+from hippo.audit import AuditLogger
 
 logger = logging.getLogger("hippo")
 
 # Concurrency tracking
 _active_requests = 0
 _active_lock = threading.Lock()
+
+
+def _get_audit(request: Request) -> AuditLogger:
+    return getattr(request.app.state, "audit", AuditLogger(None))
 
 
 @asynccontextmanager
@@ -37,6 +42,13 @@ async def lifespan(app: FastAPI):
     file_handler = logging.FileHandler(os.path.join(log_dir, "hippo.log"))
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     logging.getLogger("hippo").addHandler(file_handler)
+
+    # Audit logger
+    audit_path = getattr(app.state, "_audit_log_path", None)
+    app.state.audit = AuditLogger(audit_path)
+    if app.state.audit.enabled:
+        logger.info(f"Audit logging enabled: {audit_path}")
+
     logger.info("Hippo server started")
 
     # Pre-cache model families in background asyncio task
@@ -70,6 +82,45 @@ app = FastAPI(title="Hippo 🦛", version="0.1.0", lifespan=lifespan)
 # Concurrency tracking
 _active_requests = 0
 _active_lock = threading.Lock()
+
+
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    """Audit middleware — logs every API call to JSONL audit trail."""
+    start = time.time()
+    response = await call_next(request)
+    latency_ms = (time.time() - start) * 1000
+
+    audit = _get_audit(request)
+    if audit.enabled:
+        # P1-2 fix: extract model from query params or URL path, avoid reading body
+        model = request.query_params.get("model")
+        if not model:
+            # For POST, try lightweight peek (FastAPI caches body internally)
+            try:
+                body = await request.body()
+                if body and len(body) < 65536:  # skip large/streaming bodies
+                    data = json.loads(body)
+                    model = data.get("model")
+            except Exception:
+                pass
+
+        client_ip = request.client.host if request.client else None
+
+        # P1-4 fix: hash ALL API keys including server's own
+        api_key = request.headers.get("Authorization", "").replace("Bearer ", "") or None
+
+        audit.log(
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            latency_ms=latency_ms,
+            model=model,
+            client_ip=client_ip,
+            api_key=api_key,
+        )
+
+    return response
 
 
 def _get_config(request: Request) -> HippoConfig:

@@ -15,6 +15,9 @@ DEFAULT_MODELS_DIR = Path("~/.hippo/models").expanduser()
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 11434
+    ssl_enabled: bool = False
+    ssl_cert_path: str | None = None
+    ssl_key_path: str | None = None
 
 
 @dataclass
@@ -53,6 +56,9 @@ def load_config(path: Path | None = None) -> HippoConfig:
             for k, v in data["server"].items():
                 if hasattr(cfg.server, k):
                     setattr(cfg.server, k, v)
+                    # 特殊处理布尔值
+                    if k == "ssl_enabled" and isinstance(v, str):
+                        cfg.server.ssl_enabled = v.lower() in ("true", "1", "yes")
 
         if "models" in data and "dir" in data["models"]:
             cfg.models_dir = Path(data["models"]["dir"]).expanduser()

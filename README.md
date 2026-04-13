@@ -20,7 +20,9 @@ I built Hippo because Ollama's Go codebase was hard to debug and extend. I wante
 2. **Pure Python** - Fully auditable. If something breaks, you can actually read the code and fix it.
 3. **Ollama-compatible** - Drop-in API replacement. Just change the base URL.
 
-**Trade-offs:** Hippo is slower than Ollama (Python overhead), and doesn't support all features yet (no multi-GPU, no LoRA). If you need production-grade performance, stick with Ollama. If you need hackability, Hippo might work better.
+**Built-in Audit Logging** — Every API call is logged with timestamp, model, latency, and status. SOC 2 / ISO 27001 compliance out of the box. Ollama can't do this.
+
+**Trade-offs:** Hippo is slower than Ollama (Python overhead), and doesn't support all features yet (no multi-GPU, no LoRA). If you need production-grade performance, stick with Ollama. If you need hackability and auditability, Hippo might work better.
 
 ---
 
@@ -29,6 +31,8 @@ I built Hippo because Ollama's Go codebase was hard to debug and extend. I wante
 - **Ollama-Compatible API**: Drop-in replacement (mostly)
 - **Auto-Unload**: Models free memory after idle timeout
 - **Pure Python**: Auditable, debuggable, modifyable
+- **Audit Logging**: JSONL audit trail for compliance readiness (SOC 2, ISO 27001)
+- **HTTPS Support**: Self-signed certificates and Let's Encrypt
 - **TUI Dashboard**: Real-time monitoring with Rich
 - **Model Quantization**: 14 GGUF formats supported
 - **Docker & CI**: Production deployment ready
@@ -99,6 +103,47 @@ curl http://localhost:11434/api/generate -d '{
 | `/api/version` | GET | Version info |
 
 **Streaming:** All endpoints support Server-Sent Events (set `stream: true`).
+
+---
+
+## Audit Logging
+
+Enable compliance-ready audit logging with a single flag:
+
+```bash
+# Enable audit logging
+hippo serve --audit-log ~/.hippo/audit.jsonl
+
+# Every API call is logged:
+# {"ts":"2026-04-13T23:16:42.123Z","method":"POST","path":"/api/chat",
+#  "model":"llama-3.2-3b","status":200,"latency_ms":1234.5,
+#  "prompt_tokens":42,"completion_tokens":128,"client_ip":"127.0.0.1",
+#  "api_key_hash":"sha256:4a3b2c1d..."}
+```
+
+**Why this matters:**
+
+| Need | Ollama | Hippo |
+|------|--------|-------|
+| **Audit trail** | ❌ No logging | ✅ JSONL per-request |
+| **SOC 2 compliance** | ❌ Cannot verify | ✅ Full request history |
+| **Data privacy proof** | ❌ Black box | ✅ Auditable code + logs |
+| **Access tracking** | ❌ None | ✅ Client IP + API key hash |
+| **Error forensics** | ❌ Logs only | ✅ Structured error tracking |
+
+**Security features:**
+- API keys are **truncated SHA-256 (128-bit)** hashed in logs (never stored in plain text)
+- Client IPs are logged for access auditing
+- Automatic log rotation when file exceeds 100 MB
+- Thread-safe writes for concurrent requests
+
+**Use cases:**
+- **Enterprise compliance** — Audit trail for SOC 2, ISO 27001, GDPR reviews
+- **Security monitoring** — Detect unusual API usage patterns
+- **Performance analysis** — Identify slow queries and bottlenecks
+- **Cost tracking** — Count tokens per model per user
+
+> **Note:** Audit logging provides the foundation for compliance. Production environments may need additional measures (log signing, centralized collection, tamper-evident storage).
 
 ---
 

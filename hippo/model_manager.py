@@ -159,11 +159,18 @@ class ModelManager:
         logger.info("Loading model '%s' from %s ...", name, model_path)
         start = time.time()
 
+        # Detect embedding models (nomic-embed, bge-m3, etc.)
+        is_embedding_model = any(
+            keyword in name.lower()
+            for keyword in ["embed", "bge", "e5", "retrieval"]
+        )
+
         llama = Llama(
             model_path=str(model_path),
             n_ctx=self.config.defaults.n_ctx,
             n_gpu_layers=self.config.defaults.n_gpu_layers,
             verbose=False,
+            embedding=is_embedding_model,  # Enable embedding for embedding models
         )
 
         elapsed = time.time() - start

@@ -21,6 +21,10 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind host"),
     port: int = typer.Option(11434, "--port", "-p", help="Bind port"),
     config_path: str = typer.Option(None, "--config", "-c", help="Config file path"),
+    ssl: bool = typer.Option(False, "--ssl", help="Enable HTTPS (requires --cert and --key)"),
+    cert: str = typer.Option(None, "--cert", help="SSL certificate file path"),
+    key: str = typer.Option(None, "--key", help="SSL private key file path"),
+    audit_log: str = typer.Option(None, "--audit-log", help="Enable audit logging (JSONL file path)"),
 ):
     """Start the Hippo server."""
     import uvicorn
@@ -32,17 +36,44 @@ def serve(
     cfg.server.host = host
     cfg.server.port = port
 
+    # SSL/TLS 配置
+    if ssl or cert or key:
+        if not cert or not key:
+            typer.echo("Error: --ssl requires both --cert and --key", err=True)
+            sys.exit(1)
+        cfg.server.ssl_enabled = True
+        cfg.server.ssl_cert_path = cert
+        cfg.server.ssl_key_path = key
+
     # Wire up via app.state instead of globals
     api.app.state.config = cfg
     api.app.state.manager = ModelManager(cfg)
     api.app.state.manager.start_cleanup_thread()
+    api.app.state._audit_log_path = audit_log
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    uvicorn.run(api.app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+    # SSL 配置
+    if cfg.server.ssl_enabled:
+        logging.info(f"HTTPS enabled: cert={cfg.server.ssl_cert_path}, key={cfg.server.ssl_key_path}")
+        uvicorn.run(
+            api.app,
+            host=cfg.server.host,
+            port=cfg.server.port,
+            log_level="info",
+            ssl_keyfile=cfg.server.ssl_key_path,
+            ssl_certfile=cfg.server.ssl_cert_path
+        )
+    else:
+        uvicorn.run(
+            api.app,
+            host=cfg.server.host,
+            port=cfg.server.port,
+            log_level="info"
+        )
 
 
 @app.command(name="list")

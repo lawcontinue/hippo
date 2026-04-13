@@ -1,6 +1,6 @@
 """Tests for model_manager module."""
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
 
@@ -36,7 +36,6 @@ def test_double_check_locking():
     """Test that concurrent get() calls don't load model twice."""
     m = _make_manager()
     load_count = 0
-    real_load = m._load
 
     def slow_load(name):
         nonlocal load_count

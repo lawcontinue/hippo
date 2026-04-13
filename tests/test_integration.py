@@ -2,15 +2,12 @@
 
 import os
 import time
-import tempfile
-import threading
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from hippo.config import HippoConfig, ServerConfig, DefaultsConfig
+from hippo.config import HippoConfig, ServerConfig
 from hippo.model_manager import ModelManager
 from hippo import api
 
@@ -120,7 +117,7 @@ class TestFullFlow:
             })
             assert resp.status_code == 200
             # NDJSON response
-            lines = [l for l in resp.text.strip().split("\n") if l]
+            lines = [line for line in resp.text.strip().split("\n") if line]
             assert len(lines) >= 3  # 2 chunks + final done
 
     def test_model_not_found(self, cfg):

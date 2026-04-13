@@ -2,7 +2,7 @@
 import os
 import tempfile
 from pathlib import Path
-from hippo.config import HippoConfig, load_config, DefaultsConfig, ServerConfig
+from hippo.config import HippoConfig, load_config
 
 
 def test_default_config():
@@ -41,7 +41,7 @@ def test_models_dir_created():
     with tempfile.TemporaryDirectory() as tmp:
         cfg_path = Path(tmp) / "config.yaml"
         cfg_path.write_text(f"models:\n  dir: {tmp}/models_test\n")
-        cfg = load_config(cfg_path)
+        load_config(cfg_path)
         assert (Path(tmp) / "models_test").exists()
 
 

@@ -164,9 +164,9 @@ def _read_gguf_metadata_fast(path, max_keys=None):
 
             version = struct.unpack("<I", f.read(4))[0]
             if version >= 3:
-                n_tensors = struct.unpack("<Q", f.read(8))[0]
+                struct.unpack("<Q", f.read(8))[0]  # n_tensors (uint64)
             else:
-                n_tensors = struct.unpack("<I", f.read(4))[0]
+                struct.unpack("<I", f.read(4))[0]  # n_tensors (uint32)
             n_kv = struct.unpack("<Q", f.read(8))[0]
 
             def read_string():

@@ -23,7 +23,7 @@ class ModelManager:
         self._lock = threading.Lock()
         self._model_locks: dict[str, threading.Lock] = {}
         self._stop_event = threading.Event()
-        self._cleanup_thread: Optional[thread.Thread] = None
+        self._cleanup_thread: Optional[threading.Thread] = None
         self._family_cache: dict[str, str] = {}
 
     def _get_model_lock(self, name: str) -> threading.Lock:
@@ -75,7 +75,7 @@ class ModelManager:
                 if time.time() - self._last_used[name] <= timeout:
                     continue  # recently used, skip
                 # Mark for unload by removing tracking entries while holding lock
-                last_used_time = self._last_used.pop(name, None)
+                self._last_used.pop(name, None)
                 llama = self._loaded.pop(name, None)
 
             if llama is not None:

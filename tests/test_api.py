@@ -1,6 +1,6 @@
 """Tests for API endpoints."""
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager

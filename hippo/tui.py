@@ -2,13 +2,11 @@
 
 import time
 import os
-import sys
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.live import Live
-from rich.layout import Layout
 from rich.text import Text
 
 import requests
@@ -65,7 +63,7 @@ def _build_dashboard() -> Panel:
     summary = f"📊 {len(models)} models · {total_size:.2f} GB total · Server v{ver}"
     return Panel(
         table,
-        title=f"Hippo 🦛 Dashboard",
+        title="Hippo 🦛 Dashboard",
         subtitle=summary,
         border_style="blue",
     )

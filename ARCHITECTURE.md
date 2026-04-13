@@ -1,6 +1,6 @@
 # Hippo 🦛 Architecture Design
 
-> Lightweight local LLM manager — Ollama's Python alternative
+Lightweight local LLM manager — Ollama's Python alternative
 
 ## Problem Statement
 

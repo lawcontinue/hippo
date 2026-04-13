@@ -4,9 +4,7 @@ import os
 import time
 import json
 import logging
-import asyncio
 import threading
-from typing import Optional
 from contextlib import asynccontextmanager
 
 import urllib.parse
@@ -38,19 +36,22 @@ async def lifespan(app: FastAPI):
     logging.getLogger("hippo").addHandler(file_handler)
     logger.info("Hippo server started")
 
-    # Pre-cache model families in background thread
+    # Pre-cache model families in background asyncio task
     manager = getattr(app.state, "manager", None)
     if manager:
-        def _precache():
-            for p in manager.config.models_dir.rglob("*.gguf"):
+        async def _precache():
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _precache_sync, manager)
+
+        def _precache_sync(mgr):
+            for p in mgr.config.models_dir.rglob("*.gguf"):
                 try:
-                    manager._detect_family(p)
+                    mgr._detect_family(p)
                 except Exception:
                     pass
             logger.info("Model family pre-caching complete")
 
-        t = threading.Thread(target=_precache, daemon=True)
-        t.start()
+        asyncio.create_task(_precache())
 
     yield
 

@@ -47,7 +47,7 @@ def quantize_model(input_path: str, output_path: str, fmt: str = "q4_k_m"):
 
     if fmt not in QUANT_FORMATS:
         print(f"❌ Unknown format: {fmt}")
-        print(f"   Run 'hippo quantize --list' to see available formats")
+        print("   Run 'hippo quantize --list' to see available formats")
         sys.exit(1)
 
     input_p = Path(input_path)
@@ -56,7 +56,6 @@ def quantize_model(input_path: str, output_path: str, fmt: str = "q4_k_m"):
         sys.exit(1)
 
     from rich.console import Console
-    from rich.progress import Progress
 
     console = Console()
     console.print(f"🔄 Quantizing [cyan]{input_path}[/] → [green]{output_path}[/] ({fmt})")

@@ -1,7 +1,6 @@
 """HuggingFace GGUF model downloader."""
 
 import os
-import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -78,7 +77,6 @@ def pull_model(name: str, models_dir: Path) -> Path:
             raise FileNotFoundError(f"No GGUF files found in repo '{repo_id}'")
     else:
         parts = name.split(":")
-        base = parts[0]
         tag = parts[1] if len(parts) > 1 else ""
         name_candidates = _sanitize_model_name(name)
 

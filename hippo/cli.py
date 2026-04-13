@@ -2,7 +2,6 @@
 
 import os
 import sys
-import json
 import logging
 
 import typer
@@ -178,6 +177,15 @@ def search(
 
 
 @app.command()
+def tui(
+    refresh: float = typer.Option(2.0, "--refresh", "-r", help="Refresh interval in seconds"),
+):
+    """Live terminal dashboard for Hippo."""
+    from hippo.tui import run_tui
+    run_tui(refresh_interval=refresh)
+
+
+@app.command()
 def remove(
     name: str = typer.Argument(..., help="Model name to remove"),
 ):
@@ -199,6 +207,27 @@ def remove(
     except requests.ConnectionError:
         typer.echo("Error: Hippo server not running. Start with: hippo serve", err=True)
         sys.exit(1)
+
+
+@app.command()
+def quantize(
+    input_path: str = typer.Argument(None, help="Input GGUF file path"),
+    output_path: str = typer.Argument(None, help="Output GGUF file path"),
+    format: str = typer.Option("q4_k_m", "--format", "-f", help="Quantization format"),
+    list_formats_flag: bool = typer.Option(False, "--list", "-l", help="List available formats"),
+):
+    """Quantize a GGUF model to a different format."""
+    from hippo.quantize import list_formats, quantize_model
+
+    if list_formats_flag:
+        list_formats()
+        return
+
+    if not input_path or not output_path:
+        typer.echo("Error: provide input and output paths, or use --list", err=True)
+        raise typer.Exit(1)
+
+    quantize_model(input_path, output_path, format)
 
 
 if __name__ == "__main__":

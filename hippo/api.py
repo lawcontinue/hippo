@@ -3,6 +3,8 @@
 import os
 import time
 import json
+import struct
+import hashlib
 import logging
 import asyncio
 import threading
@@ -129,26 +131,135 @@ async def concurrency_middleware(request: Request, call_next):
 
 
 
+def _read_gguf_metadata_fast(path, max_keys=None):
+    """Read GGUF metadata without loading the model (fast, <1ms).
+
+    Parses the GGUF header directly to extract key-value metadata pairs.
+    This avoids the expensive llama_cpp.Llama() constructor which loads
+    the entire model into memory just to read metadata.
+
+    GGUF format: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
+    """
+    GGUF_MAGIC = 0x46475547  # "GGUF" in little-endian
+    GGUF_TYPE_UINT8 = 0
+    GGUF_TYPE_INT8 = 1
+    GGUF_TYPE_UINT16 = 2
+    GGUF_TYPE_INT16 = 3
+    GGUF_TYPE_UINT32 = 4
+    GGUF_TYPE_INT32 = 5
+    GGUF_TYPE_FLOAT32 = 6
+    GGUF_TYPE_BOOL = 7
+    GGUF_TYPE_STRING = 8
+    GGUF_TYPE_ARRAY = 9
+    GGUF_TYPE_UINT64 = 10
+    GGUF_TYPE_INT64 = 11
+    GGUF_TYPE_FLOAT64 = 12
+
+    try:
+        with open(path, "rb") as f:
+            # Read header: magic(4) + version(4) + n_tensors(8) + n_kv(8)
+            magic = struct.unpack("<I", f.read(4))[0]
+            if magic != GGUF_MAGIC:
+                return {}
+
+            version = struct.unpack("<I", f.read(4))[0]
+            if version >= 3:
+                n_tensors = struct.unpack("<Q", f.read(8))[0]
+            else:
+                n_tensors = struct.unpack("<I", f.read(4))[0]
+            n_kv = struct.unpack("<Q", f.read(8))[0]
+
+            def read_string():
+                length = struct.unpack("<Q", f.read(8))[0]
+                return f.read(length).decode("utf-8", errors="replace")
+
+            def read_value(vtype):
+                if vtype == GGUF_TYPE_UINT8:
+                    return struct.unpack("<B", f.read(1))[0]
+                elif vtype == GGUF_TYPE_INT8:
+                    return struct.unpack("<b", f.read(1))[0]
+                elif vtype == GGUF_TYPE_UINT16:
+                    return struct.unpack("<H", f.read(2))[0]
+                elif vtype == GGUF_TYPE_INT16:
+                    return struct.unpack("<h", f.read(2))[0]
+                elif vtype == GGUF_TYPE_UINT32:
+                    return struct.unpack("<I", f.read(4))[0]
+                elif vtype == GGUF_TYPE_INT32:
+                    return struct.unpack("<i", f.read(4))[0]
+                elif vtype == GGUF_TYPE_FLOAT32:
+                    return struct.unpack("<f", f.read(4))[0]
+                elif vtype == GGUF_TYPE_BOOL:
+                    return struct.unpack("<B", f.read(1))[0] != 0
+                elif vtype == GGUF_TYPE_STRING:
+                    return read_string()
+                elif vtype == GGUF_TYPE_UINT64:
+                    return struct.unpack("<Q", f.read(8))[0]
+                elif vtype == GGUF_TYPE_INT64:
+                    return struct.unpack("<q", f.read(8))[0]
+                elif vtype == GGUF_TYPE_FLOAT64:
+                    return struct.unpack("<d", f.read(8))[0]
+                elif vtype == GGUF_TYPE_ARRAY:
+                    elem_type = struct.unpack("<I", f.read(4))[0]
+                    arr_len = struct.unpack("<Q", f.read(8))[0]
+                    # Skip array data - we don't need it for metadata lookup
+                    elem_sizes = {0:1,1:1,2:2,3:2,4:4,5:4,6:4,7:1,10:8,11:8,12:8}
+                    if elem_type == 8:  # string array
+                        for _ in range(arr_len):
+                            slen = struct.unpack("<Q", f.read(8))[0]
+                            f.read(slen)
+                    elif elem_type in elem_sizes:
+                        f.read(arr_len * elem_sizes[elem_type])
+                    return None
+                else:
+                    return None
+
+            metadata = {}
+            for _ in range(n_kv):
+                key = read_string()
+                vtype = struct.unpack("<I", f.read(4))[0]
+                value = read_value(vtype)
+                if value is not None:
+                    metadata[key] = value
+                if max_keys and len(metadata) >= max_keys:
+                    break
+
+            return metadata
+    except Exception:
+        return {}
+
+
 def _model_info(name: str, manager: ModelManager) -> dict:
     """Build Ollama-style model info dict."""
     model_path = manager._resolve_model_path(name)
     family = "unknown"
+    quant = ""
+    size_bytes = 0
     if model_path:
         family = manager._detect_family(model_path)
+        size_bytes = model_path.stat().st_size
+        # Extract quantization from filename (e.g., Q4_K_M)
+        fname = model_path.name.upper()
+        for q in ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_0", "Q4_K_M", "Q4_K_S", "Q4_0", "Q3_K_M", "Q3_K_S", "Q2_K", "F16", "F32"]:
+            if q in fname:
+                quant = q
+                break
+
+    # Quick digest (first 8 bytes of SHA256 of filename, not full file hash)
+    digest = hashlib.sha256(name.encode()).hexdigest()[:64]
 
     return {
         "name": name,
         "model": name,
         "modified_at": "",
-        "size": 0,
-        "digest": "",
+        "size": size_bytes,
+        "digest": digest,
         "details": {
             "parent_model": "",
             "format": "gguf",
             "family": family,
             "families": [family],
             "parameter_size": "",
-            "quantization_level": "",
+            "quantization_level": quant,
         },
     }
 
@@ -375,16 +486,20 @@ async def show_model(request: Request):
             quant = q
             break
 
-    # Try to get context length from metadata
+    # Read context length from GGUF metadata directly (fast, <1ms)
+    # No need to load the model with llama_cpp
     n_ctx = 4096
-    try:
-        from llama_cpp import Llama as _Llama
-        tmp = _Llama(model_path=str(model_path), n_ctx=1, verbose=False)
-        meta = tmp.metadata()
-        n_ctx = int(meta.get("llama.context_length", meta.get("default.context_length", 4096)))
-        del tmp
-    except Exception:
-        pass
+    param_size = ""
+    meta = _read_gguf_metadata_fast(model_path)
+    if meta:
+        n_ctx = int(meta.get("llama.context_length",
+                   meta.get("default.context_length",
+                   meta.get("general.context_length", 4096))))
+        # Also try to get parameter count for parameter_size
+        n_params = meta.get("llama.parameter_count",
+                   meta.get("general.parameter_count", 0))
+        if n_params:
+            param_size = f"{n_params / 1e9:.1f}B"
 
     return {
         "modelfile": "",
@@ -395,7 +510,7 @@ async def show_model(request: Request):
             "format": "gguf",
             "family": family,
             "families": [family],
-            "parameter_size": "",
+            "parameter_size": param_size,
             "quantization_level": quant,
         },
         "model_info": {
@@ -441,6 +556,31 @@ async def search_models(q: str = Query("", alias="q"), limit: int = Query(10)):
 async def version():
     """Return server version (Ollama compatible)."""
     return {"version": "0.1.0"}
+
+
+@app.get("/v1/models")
+async def list_models_openai(request: Request):
+    """List models in OpenAI-compatible format."""
+    manager = _get_manager(request)
+    models = manager.list_available()
+    data = []
+    for m in models:
+        data.append({
+            "id": m["name"],
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "hippo",
+        })
+    for entry in manager.list_loaded():
+        name = entry["name"]
+        if not any(d["id"] == name for d in data):
+            data.append({
+                "id": name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "hippo",
+            })
+    return {"object": "list", "data": data}
 
 
 @app.get("/")

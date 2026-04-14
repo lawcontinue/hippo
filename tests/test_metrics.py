@@ -1,7 +1,5 @@
 """Tests for Prometheus metrics."""
 
-import pytest
-
 
 def test_metrics_module_import():
     """Test that metrics module can be imported."""
@@ -20,7 +18,7 @@ def test_metrics_router_import():
 
 def test_metrics_config():
     """Test that config has metrics settings."""
-    from hippo.config import HippoConfig, load_config
+    from hippo.config import load_config
 
     config = load_config()
     assert hasattr(config, 'metrics_enabled')

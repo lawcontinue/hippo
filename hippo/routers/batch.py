@@ -114,7 +114,6 @@ async def _batch_execute(
         return auth_result
 
     config = _get_config(request)
-    manager = _get_manager(request)
 
     # P0-2 fix: limit request body size to prevent OOM (default 10MB)
     raw_body = await request.body()

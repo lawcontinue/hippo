@@ -8,7 +8,7 @@ import urllib.request
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 
-from hippo.dependencies import _get_config, _get_manager, _check_auth
+from hippo.dependencies import _check_auth
 from hippo.config import HippoConfig
 from hippo.downloader import pull_model
 from hippo import __version__

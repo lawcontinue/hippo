@@ -383,9 +383,23 @@ async def generate(request: Request):
         "repeat_penalty": repeat_penalty,
     }
 
+    # P2-4 fix: inference timeout protection (default 120s)
+    timeout_seconds = options.get("timeout", 120)
+
     if not stream:
         t0 = time.time_ns()
-        result = llama.create_completion(prompt=prompt, stream=False, **params)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, lambda: llama.create_completion(prompt=prompt, stream=False, **params)
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {"error": f"Inference timed out after {timeout_seconds}s"},
+                status_code=504,
+            )
         elapsed = time.time_ns() - t0
         return {
             "model": model_name,
@@ -461,9 +475,23 @@ async def chat(request: Request):
         "repeat_penalty": repeat_penalty,
     }
 
+    # P2-4 fix: inference timeout protection (default 120s)
+    timeout_seconds = options.get("timeout", 120)
+
     if not stream:
         t0 = time.time_ns()
-        result = llama.create_chat_completion(messages=messages, stream=False, **params)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, lambda: llama.create_chat_completion(messages=messages, stream=False, **params)
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {"error": f"Inference timed out after {timeout_seconds}s"},
+                status_code=504,
+            )
         msg = result["choices"][0]["message"]
         elapsed = time.time_ns() - t0
         return {

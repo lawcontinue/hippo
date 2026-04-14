@@ -20,7 +20,7 @@ I built Hippo because Ollama's Go codebase was hard to debug and extend. I wante
 2. **Pure Python** - Fully auditable. If something breaks, you can actually read the code and fix it.
 3. **Ollama-compatible** - Drop-in API replacement. Just change the base URL.
 
-**Built-in Audit Logging** — Every API call is logged with timestamp, model, latency, and status. SOC 2 / ISO 27001 compliance out of the box. Ollama can't do this.
+**Built-in Audit Logging** — Every API call is logged with timestamp, model, latency, and status. SOC 2 / ISO 27001 audit trail support out of the box. Ollama can't do this.
 
 **Trade-offs:** Hippo is slower than Ollama (Python overhead), and doesn't support all features yet (no multi-GPU, no LoRA). If you need production-grade performance, stick with Ollama. If you need hackability and auditability, Hippo might work better.
 
@@ -31,7 +31,7 @@ I built Hippo because Ollama's Go codebase was hard to debug and extend. I wante
 - **Ollama-Compatible API**: Drop-in replacement (mostly)
 - **Auto-Unload**: Models free memory after idle timeout
 - **Pure Python**: Auditable, debuggable, modifyable
-- **Audit Logging**: JSONL audit trail for compliance readiness (SOC 2, ISO 27001)
+- **Audit Logging**: JSONL audit trail designed to support SOC 2 / ISO 27001 compliance reviews
 - **HTTPS Support**: Self-signed certificates and Let's Encrypt
 - **TUI Dashboard**: Real-time monitoring with Rich
 - **Model Quantization**: 14 GGUF formats supported
@@ -126,7 +126,7 @@ hippo serve --audit-log ~/.hippo/audit.jsonl
 | Need | Ollama | Hippo |
 |------|--------|-------|
 | **Audit trail** | ❌ No logging | ✅ JSONL per-request |
-| **SOC 2 compliance** | ❌ Cannot verify | ✅ Full request history |
+| **SOC 2 audit trail** | ❌ No logging | ✅ Full request history |
 | **Data privacy proof** | ❌ Black box | ✅ Auditable code + logs |
 | **Access tracking** | ❌ None | ✅ Client IP + API key hash |
 | **Error forensics** | ❌ Logs only | ✅ Structured error tracking |
@@ -138,7 +138,7 @@ hippo serve --audit-log ~/.hippo/audit.jsonl
 - Thread-safe writes for concurrent requests
 
 **Use cases:**
-- **Enterprise compliance** — Audit trail for SOC 2, ISO 27001, GDPR reviews
+- **Enterprise compliance** — Audit trail designed for SOC 2, ISO 27001, GDPR compliance reviews
 - **Security monitoring** — Detect unusual API usage patterns
 - **Performance analysis** — Identify slow queries and bottlenecks
 - **Cost tracking** — Count tokens per model per user

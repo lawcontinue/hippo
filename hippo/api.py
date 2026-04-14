@@ -1,6 +1,7 @@
 """FastAPI server — Ollama-compatible API."""
 
 import os
+import secrets
 import time
 import json
 import struct
@@ -141,7 +142,8 @@ async def _check_auth(request: Request):
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         token = auth[7:]
-        if token == api_key:
+        # P0-1 fix: use secrets.compare_digest() to prevent timing attacks
+        if secrets.compare_digest(token, api_key):
             return
 
     return JSONResponse(
@@ -338,7 +340,11 @@ async def list_models(request: Request):
 @app.post("/api/generate")
 async def generate(request: Request):
     """Generate completion (Ollama compatible)."""
-    # Auth check for write-like inference (keep consistent with Ollama)
+    # P0-2 fix: require auth for inference endpoints
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     config = _get_config(request)
     manager = _get_manager(request)
     body = await request.json()
@@ -413,6 +419,11 @@ async def generate(request: Request):
 @app.post("/api/chat")
 async def chat(request: Request):
     """Chat completion (Ollama compatible)."""
+    # P0-2 fix: require auth for inference endpoints
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     config = _get_config(request)
     manager = _get_manager(request)
     body = await request.json()
@@ -582,6 +593,11 @@ async def embeddings(request: Request):
     Supports both legacy format (prompt) and new format (input).
     Returns a single embedding vector for the given text.
     """
+    # P0-2 fix: require auth for inference endpoints
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     manager = _get_manager(request)
     body = await request.json()
     model_name = body.get("model", "")
@@ -611,6 +627,11 @@ async def embed(request: Request):
     Accepts {"model": "...", "input": "text" | ["text1", "text2"]}
     Returns {"model": "...", "embeddings": [[...], [...]]}
     """
+    # P0-2 fix: require auth for inference endpoints
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     manager = _get_manager(request)
     body = await request.json()
     model_name = body.get("model", "")
@@ -656,6 +677,11 @@ async def embeddings_openai(request: Request):
     Accepts {"model": "...", "input": "text" | ["text1"] | [token_ids]}
     Returns OpenAI-style response with usage stats.
     """
+    # P0-2 fix: require auth for inference endpoints
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     manager = _get_manager(request)
     body = await request.json()
     model_name = body.get("model", "")

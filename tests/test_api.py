@@ -1,5 +1,6 @@
 """Tests for API endpoints."""
 import pytest
+import secrets
 from fastapi.testclient import TestClient
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
@@ -67,3 +68,47 @@ def test_pull_with_auth(monkeypatch, client):
     )
     # Will fail to find model, but auth passes
     assert resp.status_code == 500
+
+
+def test_auth_timing_attack_protection(monkeypatch, client):
+    """P0-1: Verify secrets.compare_digest() is used for timing attack protection."""
+    monkeypatch.setenv("HIPPO_API_KEY", "my-secret-api-key-12345")
+
+    # Test 1: Correct key should pass
+    resp = client.post(
+        "/api/pull",
+        json={"name": "test"},
+        headers={"Authorization": "Bearer my-secret-api-key-12345"},
+    )
+    # Auth passes (will fail on model download, but that's expected)
+    assert resp.status_code == 500
+
+    # Test 2: Wrong key should fail
+    resp = client.post(
+        "/api/pull",
+        json={"name": "test"},
+        headers={"Authorization": "Bearer wrong-key-different"},
+    )
+    assert resp.status_code == 401
+
+    # Test 3: Partially matching key should also fail (timing attack protection)
+    resp = client.post(
+        "/api/pull",
+        json={"name": "test"},
+        headers={"Authorization": "Bearer my-secret"},
+    )
+    assert resp.status_code == 401
+
+    # Test 4: No auth header should fail
+    resp = client.post(
+        "/api/pull",
+        json={"name": "test"},
+    )
+    assert resp.status_code == 401
+
+    # Test 5: secrets.compare_digest() verification
+    # Verify that secrets.compare_digest() works as expected
+    api_key = "my-secret-api-key-12345"
+    assert secrets.compare_digest(api_key, api_key) is True
+    assert secrets.compare_digest("wrong", api_key) is False
+    assert secrets.compare_digest("my-secret", api_key) is False

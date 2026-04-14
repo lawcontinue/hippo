@@ -9,6 +9,7 @@ from typing import Optional
 from llama_cpp import Llama
 
 from hippo.config import HippoConfig
+from hippo import metrics
 
 logger = logging.getLogger("hippo")
 
@@ -180,6 +181,14 @@ class ModelManager:
             self._loaded[name] = llama
             self._last_used[name] = time.time()
 
+        # Metrics: record model load
+        metrics.models_loaded.labels(model=name).set(1)
+
+        # Metrics: record memory usage
+        if model_path.exists():
+            memory_bytes = model_path.stat().st_size
+            metrics.memory_usage_bytes.labels(model=name).set(memory_bytes)
+
         return llama
 
     def _evict_if_needed(self, incoming_path: Path):
@@ -218,6 +227,11 @@ class ModelManager:
             self._last_used.pop(name, None)
 
         if llama is not None:
+            # Metrics: remove model load
+            metrics.models_loaded.labels(model=name).set(0)
+            # Metrics: remove memory usage
+            metrics.memory_usage_bytes.labels(model=name).set(0)
+
             del llama
             logger.info("Unloaded model '%s'", name)
             return True

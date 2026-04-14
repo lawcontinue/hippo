@@ -159,7 +159,7 @@ class TestFullFlow:
         c, _ = client
         resp = c.get("/api/version")
         assert resp.status_code == 200
-        assert resp.json()["version"] == "0.1.0"
+        assert resp.json()["version"] == "0.2.0"
 
 
 # ============================================================

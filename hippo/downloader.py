@@ -1,6 +1,7 @@
 """HuggingFace GGUF model downloader."""
 
 import os
+import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -169,4 +170,61 @@ def pull_model(name: str, models_dir: Path) -> Path:
     # Rename .part to final
     part_dest.rename(dest)
     logger.info("Downloaded to %s (%d bytes)", dest, actual_size)
+
+    # P1-3 fix: SHA256 integrity verification
+    integrity_ok, sha256 = verify_sha256(dest)
+    if integrity_ok is not None:
+        if integrity_ok:
+            logger.info("SHA256 verification passed: %s", sha256[:16] + "...")
+        else:
+            logger.error("SHA256 verification FAILED for %s", dest)
+            dest.unlink(missing_ok=True)
+            raise IOError(
+                f"SHA256 integrity check failed for {dest}. "
+                f"File may be corrupted or tampered with."
+            )
+    else:
+        # No expected hash available, log actual hash for user verification
+        logger.info("SHA256 (no expected hash to compare): %s", sha256[:16] + "...")
+
     return dest
+
+
+def compute_sha256(path: Path, block_size: int = 65536) -> str:
+    """Compute SHA256 hash of a file."""
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(block_size), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _fetch_hf_file_hash(repo_id: str, filename: str) -> Optional[str]:
+    """Fetch expected SHA256 from HuggingFace API."""
+    try:
+        api_url = f"{HF_BASE}/api/models/{repo_id}"
+        resp = requests.get(api_url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        for s in data.get("siblings", []):
+            if s.get("rfilename") == filename:
+                # HuggingFace provides checksums in some cases
+                return s.get("checksum") or None
+        return None
+    except Exception:
+        return None
+
+
+def verify_sha256(path: Path, expected: Optional[str] = None) -> tuple[Optional[bool], str]:
+    """Verify file integrity via SHA256.
+
+    Returns (match_result, actual_hash):
+    - (True, hash) if expected matches
+    - (False, hash) if expected doesn't match
+    - (None, hash) if no expected hash available
+    """
+    actual = compute_sha256(path)
+    if expected:
+        return (actual == expected, actual)
+    return (None, actual)

@@ -4,7 +4,6 @@ Returns real-time statistics: QPS, memory usage, error rate, etc.
 """
 
 import time
-from typing import Dict, Any
 
 from fastapi import APIRouter, Request
 from prometheus_client import REGISTRY

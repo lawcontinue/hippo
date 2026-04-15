@@ -9,7 +9,6 @@ Features:
 """
 
 import asyncio
-import time
 import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
@@ -124,15 +123,15 @@ class TUIApp:
             err_color = "green" if self.stats.error_rate < 1 else "yellow" if self.stats.error_rate < 5 else "red"
 
             stats_text = Text()
-            stats_text.append(f"QPS: ", style="white")
+            stats_text.append("QPS: ", style="white")
             stats_text.append(f"{self.stats.qps:.1f} ", style=qps_color)
-            stats_text.append(f"• Memory: ", style="white")
+            stats_text.append("• Memory: ", style="white")
             stats_text.append(f"{self.stats.memory_mb:.0f} MB ", style=mem_color)
-            stats_text.append(f"• Errors: ", style="white")
+            stats_text.append("• Errors: ", style="white")
             stats_text.append(f"{self.stats.error_rate:.1f}% ", style=err_color)
-            stats_text.append(f"• Requests: ", style="white")
+            stats_text.append("• Requests: ", style="white")
             stats_text.append(f"{self.stats.total_requests} ", style="cyan")
-            stats_text.append(f"• Loaded: ", style="white")
+            stats_text.append("• Loaded: ", style="white")
             stats_text.append(f"{self.stats.loaded_models}", style="cyan")
 
         return Panel(
@@ -188,17 +187,17 @@ class TUIApp:
         model = self.models[self.selected_index]
 
         details = Text()
-        details.append(f"Model: ", style="bold cyan")
+        details.append("Model: ", style="bold cyan")
         details.append(f"{model.name}\n", style="white")
-        details.append(f"Family: ", style="bold cyan")
+        details.append("Family: ", style="bold cyan")
         details.append(f"{model.family}\n", style="white")
-        details.append(f"Quantization: ", style="bold cyan")
+        details.append("Quantization: ", style="bold cyan")
         details.append(f"{model.quantization}\n", style="white")
-        details.append(f"Size: ", style="bold cyan")
+        details.append("Size: ", style="bold cyan")
         details.append(f"{model.size_gb:.2f} GB\n", style="white")
-        details.append(f"Context: ", style="bold cyan")
+        details.append("Context: ", style="bold cyan")
         details.append(f"{model.context_length} tokens\n", style="white")
-        details.append(f"Status: ", style="bold cyan")
+        details.append("Status: ", style="bold cyan")
         details.append(f"{'Loaded' if model.loaded else 'Not loaded'}\n", style="green" if model.loaded else "dim")
 
         return Panel(
@@ -228,7 +227,7 @@ class TUIApp:
                 self._build_model_table(),
                 title="🦛 Hippo Models",
                 border_style="blue",
-                subtitle=f"Press Enter for details, ↑↓ to select, q to quit",
+                subtitle="Press Enter for details, ↑↓ to select, q to quit",
             ))
 
         return layout

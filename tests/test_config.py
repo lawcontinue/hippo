@@ -15,16 +15,15 @@ def test_default_config():
 
 
 def test_load_config_from_yaml():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write("server:\n  host: 0.0.0.0\n  port: 8080\nidle_timeout: 60\ndefaults:\n  temperature: 0.5\n  repeat_penalty: 1.2\n")
-        f.flush()
-        cfg = load_config(Path(f.name))
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg_path = Path(tmp) / "test_config.yaml"
+        cfg_path.write_text("server:\n  host: 0.0.0.0\n  port: 8080\nidle_timeout: 60\ndefaults:\n  temperature: 0.5\n  repeat_penalty: 1.2\n")
+        cfg = load_config(cfg_path)
         assert cfg.server.host == "0.0.0.0"
         assert cfg.server.port == 8080
         assert cfg.idle_timeout == 60
         assert cfg.defaults.temperature == 0.5
         assert cfg.defaults.repeat_penalty == 1.2
-        os.unlink(f.name)
 
 
 def test_api_key_from_env():

@@ -212,7 +212,7 @@ def tui(
     refresh: float = typer.Option(2.0, "--refresh", "-r", help="Refresh interval in seconds"),
 ):
     """Live terminal dashboard for Hippo."""
-    from hippo.tui import run_tui
+    from hippo.tui_v2 import run_tui
     run_tui(refresh_interval=refresh)
 
 

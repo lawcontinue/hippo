@@ -65,6 +65,10 @@ class AuditLogger:
             "path": path,
             "status": status,
             "latency_ms": round(latency_ms, 2),
+            "queue_time_ms": round(extra.get("queue_time_ms", 0), 2) if extra else 0,
+            "ttft_ms": round(extra.get("ttft_ms", 0), 2) if extra else 0,
+            "generation_time_ms": round(extra.get("generation_time_ms", 0), 2) if extra else 0,
+            "mean_itl_ms": round(extra.get("mean_itl_ms", 0), 2) if extra else 0,
         }
 
         if model:

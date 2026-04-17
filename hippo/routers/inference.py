@@ -34,6 +34,7 @@ async def generate(request: Request):
 
     # Metrics: record start time
     start_time = time.time()
+    queue_start = time.time()
 
     try:
         llama = manager.get(model_name)
@@ -45,6 +46,8 @@ async def generate(request: Request):
             status="error"
         ).inc()
         return JSONResponse({"error": str(e)}, status_code=404)
+
+    queue_time_ms = (time.time() - queue_start) * 1000  # model load wait time
 
     repeat_penalty = options.get("repeat_penalty", config.defaults.repeat_penalty)
     params = {
@@ -99,6 +102,7 @@ async def generate(request: Request):
 
         elapsed = time.time_ns() - t0
         duration = time.time() - start_time
+        generation_time_ms = elapsed / 1e6
 
         # Metrics: record successful request
         metrics.inference_requests_total.labels(
@@ -119,14 +123,25 @@ async def generate(request: Request):
             "done_reason": "stop",
             "context": [],
             "total_duration": elapsed,
+            "timings": {
+                "queue_time_ms": round(queue_time_ms, 2),
+                "ttft_ms": round(generation_time_ms, 2),  # non-streaming: TTFT = total
+                "generation_time_ms": round(generation_time_ms, 2),
+                "mean_itl_ms": 0,  # non-streaming: no inter-token latency
+            },
         }
 
     def stream_generate():
         t0 = time.time_ns()
+        ttft_ns = None
+        token_times = []
         try:
             full_response = ""
             for chunk in llama.create_completion(prompt=prompt, stream=True, **params):
                 text = chunk["choices"][0].get("text", "")
+                if ttft_ns is None:
+                    ttft_ns = time.time_ns() - t0
+                token_times.append(time.time_ns())
                 full_response += text
                 yield json.dumps({
                     "model": model_name,
@@ -137,6 +152,11 @@ async def generate(request: Request):
 
             elapsed = time.time_ns() - t0
             duration = time.time() - start_time
+            generation_time_ms = (elapsed - (ttft_ns or elapsed)) / 1e6
+            mean_itl_ms = 0.0
+            if len(token_times) > 1:
+                itls = [(token_times[i+1] - token_times[i]) / 1e6 for i in range(len(token_times)-1)]
+                mean_itl_ms = sum(itls) / len(itls)
 
             # Metrics: record successful streaming request
             metrics.inference_requests_total.labels(
@@ -157,6 +177,12 @@ async def generate(request: Request):
                 "done_reason": "stop",
                 "context": [],
                 "total_duration": elapsed,
+                "timings": {
+                    "queue_time_ms": round(queue_time_ms, 2),
+                    "ttft_ms": round((ttft_ns or elapsed) / 1e6, 2),
+                    "generation_time_ms": round(generation_time_ms, 2),
+                    "mean_itl_ms": round(mean_itl_ms, 2),
+                },
             }) + "\n"
         except Exception as e:
             # Metrics: record streaming error
@@ -199,6 +225,7 @@ async def chat(request: Request):
 
     # Metrics: record start time
     start_time = time.time()
+    queue_start = time.time()
 
     try:
         llama = manager.get(model_name)
@@ -210,6 +237,8 @@ async def chat(request: Request):
             status="error"
         ).inc()
         return JSONResponse({"error": str(e)}, status_code=404)
+
+    queue_time_ms = (time.time() - queue_start) * 1000
 
     repeat_penalty = options.get("repeat_penalty", config.defaults.repeat_penalty)
     params = {
@@ -264,6 +293,7 @@ async def chat(request: Request):
         msg = result["choices"][0]["message"]
         elapsed = time.time_ns() - t0
         duration = time.time() - start_time
+        generation_time_ms = elapsed / 1e6
 
         # Metrics: record successful request
         metrics.inference_requests_total.labels(
@@ -283,11 +313,23 @@ async def chat(request: Request):
             "done": True,
             "done_reason": "stop",
             "total_duration": elapsed,
+            "timings": {
+                "queue_time_ms": round(queue_time_ms, 2),
+                "ttft_ms": round(generation_time_ms, 2),
+                "generation_time_ms": round(generation_time_ms, 2),
+                "mean_itl_ms": 0,  # non-streaming: no inter-token latency
+            },
         }
 
     def stream_chat():
+        t0 = time.time_ns()
+        ttft_ns = None
+        token_times = []
         try:
             for chunk in llama.create_chat_completion(messages=messages, stream=True, **params):
+                if ttft_ns is None:
+                    ttft_ns = time.time_ns() - t0
+                token_times.append(time.time_ns())
                 delta = chunk["choices"][0].get("delta", {})
                 yield json.dumps({
                     "model": model_name,
@@ -297,6 +339,12 @@ async def chat(request: Request):
                 }) + "\n"
 
             duration = time.time() - start_time
+            elapsed = time.time_ns() - t0
+            generation_time_ms = (elapsed - (ttft_ns or elapsed)) / 1e6
+            mean_itl_ms = 0.0
+            if len(token_times) > 1:
+                itls = [(token_times[i+1] - token_times[i]) / 1e6 for i in range(len(token_times)-1)]
+                mean_itl_ms = sum(itls) / len(itls)
 
             # Metrics: record successful streaming request
             metrics.inference_requests_total.labels(
@@ -315,6 +363,12 @@ async def chat(request: Request):
                 "message": {"role": "assistant", "content": ""},
                 "done": True,
                 "done_reason": "stop",
+                "timings": {
+                    "queue_time_ms": round(queue_time_ms, 2),
+                    "ttft_ms": round((ttft_ns or elapsed) / 1e6, 2),
+                    "generation_time_ms": round(generation_time_ms, 2),
+                    "mean_itl_ms": round(mean_itl_ms, 2),
+                },
             }) + "\n"
         except Exception as e:
             # Metrics: record streaming error

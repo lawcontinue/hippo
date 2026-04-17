@@ -15,7 +15,7 @@ from hippo.middleware import (
     audit_middleware,
     concurrency_middleware,
 )
-from hippo.routers import models, inference, embeddings, management, system, metrics, batch, stats
+from hippo.routers import models, inference, embeddings, management, system, metrics, batch, stats, rerank
 
 from hippo import __version__
 
@@ -95,6 +95,7 @@ def create_app(config: HippoConfig, manager: ModelManager, audit_log_path: str =
     app.include_router(metrics.router)
     app.include_router(batch.router)
     app.include_router(stats.router)
+    app.include_router(rerank.router)
 
     return app
 

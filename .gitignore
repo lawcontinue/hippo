@@ -7,3 +7,5 @@ BATCH_SUMMARY.txt
 test_metrics_manual.py
 *_COMPLETION_REPORT.md
 *_REPORT.md
+*.pyc
+__pycache__/

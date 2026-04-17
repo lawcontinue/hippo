@@ -84,7 +84,11 @@ class ModelManager:
                 logger.info("Auto-unloaded model '%s' (idle %ds)", name, timeout)
 
     def _resolve_model_path(self, name: str) -> Optional[Path]:
-        """Find a GGUF file for the given model name."""
+        """Find a GGUF file for the given model name.
+
+        Supports multi-file GGUF shards (e.g., model-00001-of-00005.gguf).
+        When shards are detected, returns the first shard for llama-cpp.
+        """
         models_dir = self.config.models_dir
 
         # Direct filename match
@@ -101,14 +105,44 @@ class ModelManager:
             for c in candidates:
                 if c.stem == base_name:
                     return c
+            # Multi-file shard detection: model-00001-of-NNNNN.gguf
+            shard = self._pick_first_shard(candidates)
+            if shard:
+                return shard
             return candidates[0]
 
         # Also check subdirectories
         candidates = list(models_dir.rglob(f"{base_name}*.gguf"))
         if candidates:
+            shard = self._pick_first_shard(candidates)
+            if shard:
+                return shard
             return candidates[0]
 
         return None
+
+    @staticmethod
+    def _pick_first_shard(files: list[Path]) -> Optional[Path]:
+        """From a list of GGUF files, detect multi-file shards and return the first one.
+
+        Shard naming convention: ``<base>-00001-of-<total>.gguf``
+        Returns None if no shard pattern is found.
+        """
+        import re
+
+        shard_pattern = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+        shards = []
+        for f in files:
+            m = shard_pattern.search(f.name)
+            if m:
+                idx = int(m.group(1))
+                shards.append((idx, f))
+
+        if not shards:
+            return None
+
+        shards.sort(key=lambda x: x[0])
+        return shards[0][1]
 
     def _detect_family(self, model_path: Path) -> str:
         """Detect model family from GGUF metadata (cached)."""
@@ -166,12 +200,19 @@ class ModelManager:
             for keyword in ["embed", "bge", "e5", "retrieval"]
         )
 
+        # Detect reranker models — need logits_all=True for logprob scoring
+        is_reranker_model = any(
+            keyword in name.lower()
+            for keyword in ["rerank", "re-rank", "cross-encoder", "ms-marco", "minilm"]
+        )
+
         llama = Llama(
             model_path=str(model_path),
             n_ctx=self.config.defaults.n_ctx,
             n_gpu_layers=self.config.defaults.n_gpu_layers,
             verbose=False,
             embedding=is_embedding_model,  # Enable embedding for embedding models
+            logits_all=is_reranker_model,  # Enable logprobs for reranker scoring
         )
 
         elapsed = time.time() - start

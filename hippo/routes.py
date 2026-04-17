@@ -111,6 +111,13 @@ class RouteConfig:
                 return False
 
             for entry in data.get("routes", []):
+                # Validate required fields
+                if not isinstance(entry, dict):
+                    logger.warning("Skipping invalid route entry (not a dict): %s", entry)
+                    continue
+                if "intent" not in entry or "model" not in entry:
+                    logger.warning("Skipping route entry missing 'intent' or 'model': %s", entry)
+                    continue
                 r = RouteEntry(
                     intent=entry["intent"],
                     model=entry["model"],

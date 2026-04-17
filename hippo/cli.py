@@ -7,6 +7,9 @@ import logging
 import typer
 import requests
 
+from hippo.config import load_config
+from hippo.model_manager import ModelManager
+
 app = typer.Typer(help="Hippo 🦛 — Lightweight local LLM manager")
 
 BASE_URL = os.environ.get("HIPPO_URL", os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
@@ -263,27 +266,42 @@ def quantize(
 
 @app.command()
 def prewarm(
-    models: list[str] = typer.Argument(None, help="Model names to pre-warm (default: all loaded)"),
+    models: list[str] = typer.Argument(None, help="Model names to pre-warm"),
+    all_models: bool = typer.Option(False, "--all", "-a", help="Pre-warm ALL available models (not just loaded)"),
 ):
-    """Pre-warm loaded models by running a short inference to fill KV cache."""
+    """Pre-warm models by running a short inference to fill KV cache.
+
+    By default, only pre-warms currently loaded models.
+    Use --all to load and pre-warm all available models.
+    """
     config = load_config()
     manager = ModelManager(config)
 
-    # Load all available models first if none specified
-    if not models:
+    if models:
+        # User specified explicit models
+        target_names = list(models)
+    elif all_models:
+        # --all: load and pre-warm everything
         available = manager.list_available()
-        models = [m["name"] for m in available]
+        target_names = [m["name"] for m in available]
+    else:
+        # Default: only pre-warm already-loaded models
+        target_names = [m["name"] for m in manager.list_loaded()]
 
-    typer.echo(f"Loading {len(models)} model(s)...")
-    for name in models:
+    if not target_names:
+        typer.echo("No models to pre-warm. Load models first or use --all.")
+        return
+
+    # Load models that aren't already loaded
+    for name in target_names:
         try:
             manager.get(name)
-            typer.echo(f"  ✅ Loaded: {name}")
+            typer.echo(f"  ✅ Ready: {name}")
         except FileNotFoundError:
             typer.echo(f"  ❌ Not found: {name}")
 
-    typer.echo("Pre-warming...")
-    manager.prewarm(list(models))
+    typer.echo(f"Pre-warming {len(target_names)} model(s)...")
+    manager.prewarm(target_names)
     typer.echo("✅ Pre-warm complete")
 
 

@@ -62,6 +62,19 @@ class ModelManager:
             if self._stop_event.is_set():
                 break
             self._unload_idle()
+            self._decay_access_counts()
+
+    def _decay_access_counts(self):
+        """Decay access counts by 10% each cleanup cycle to maintain LFRU differentiation.
+
+        Without decay, long-running models accumulate counts that make
+        frequency comparisons meaningless over time.
+        """
+        with self._lock:
+            for name in self._access_count:
+                self._access_count[name] = int(self._access_count[name] * 0.9)
+                if self._access_count[name] < 1:
+                    self._access_count[name] = 1
 
     def _unload_idle(self):
         """Unload models that have been idle longer than the timeout."""
@@ -335,6 +348,30 @@ class ModelManager:
         if model_names is None:
             with self._lock:
                 model_names = list(self._loaded.keys())
+
+        # Check memory budget before pre-warming
+        limit_gb = self.config.max_memory_gb
+        if limit_gb > 0 and model_names:
+            total_gb = 0.0
+            for name in model_names:
+                p = self._resolve_model_path(name)
+                if p:
+                    total_gb += p.stat().st_size / (1024 ** 3)
+            if total_gb > limit_gb:
+                logger.warning(
+                    "Pre-warm total %.1f GB exceeds limit %.1f GB, skipping some models",
+                    total_gb, limit_gb,
+                )
+                # Only pre-warm models that fit
+                fitted = []
+                used = 0.0
+                for name in model_names:
+                    p = self._resolve_model_path(name)
+                    size = p.stat().st_size / (1024 ** 3) if p else 0
+                    if used + size <= limit_gb:
+                        fitted.append(name)
+                        used += size
+                model_names = fitted
 
         for name in model_names:
             with self._lock:

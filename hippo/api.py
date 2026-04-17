@@ -15,6 +15,7 @@ from hippo.middleware import (
     audit_middleware,
     concurrency_middleware,
 )
+from hippo.query_predictor import QueryPredictor
 from hippo.routers import models, inference, embeddings, management, system, metrics, batch, stats, rerank
 
 from hippo import __version__
@@ -41,9 +42,20 @@ async def lifespan(app: FastAPI):
 
     logger.info("Hippo server started")
 
+    # Query Predictor (Sleep-time Compute)
+    from pathlib import Path as _Path
+    predictor = QueryPredictor(
+        manager=None,  # set after manager is available
+        persist_path=_Path(os.path.join(log_dir, "predictor_stats.json")),
+    )
+    app.state.predictor = predictor
+
     # Pre-cache model families in background asyncio task
     manager = getattr(app.state, "manager", None)
     if manager:
+        # Wire predictor to manager
+        app.state.predictor.set_manager(manager)
+        app.state.predictor.start_background(interval_seconds=60)
         async def _precache():
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, _precache_sync, manager)
@@ -61,6 +73,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    predictor = getattr(app.state, "predictor", None)
+    if predictor:
+        predictor.stop_background()
     if manager:
         manager.stop_cleanup_thread()
         manager.unload_all()

@@ -9,3 +9,4 @@ test_metrics_manual.py
 *_REPORT.md
 *.pyc
 __pycache__/
+__pycache__/

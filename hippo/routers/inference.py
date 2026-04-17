@@ -16,6 +16,32 @@ logger = logging.getLogger("hippo")
 router = APIRouter()
 
 
+def _get_predictor(request: Request):
+    """Get the QueryPredictor from app state, if available."""
+    return getattr(request.app.state, "predictor", None)
+
+
+def _record_query(request: Request, endpoint: str, body: dict):
+    """Record a query to the predictor (non-blocking, best-effort)."""
+    try:
+        predictor = _get_predictor(request)
+        if predictor:
+            predictor.record(endpoint, body)
+    except Exception:
+        pass  # predictor failures must not affect inference
+
+
+def _check_predictor_cache(request: Request, endpoint: str, body: dict):
+    """Check predictor cache for a pre-computed result. Returns dict or None."""
+    try:
+        predictor = _get_predictor(request)
+        if predictor:
+            return predictor.lookup(endpoint, body)
+    except Exception:
+        pass
+    return None
+
+
 @router.post("/api/generate")
 async def generate(request: Request):
     """Generate completion (Ollama compatible)."""
@@ -31,6 +57,17 @@ async def generate(request: Request):
     prompt = body.get("prompt", "")
     stream = body.get("stream", True)
     options = body.get("options", {})
+
+    # Sleep-time Compute: record query for prediction
+    _record_query(request, "/api/generate", body)
+
+    # Sleep-time Compute: check predictor cache (non-streaming only)
+    if not stream:
+        cached = _check_predictor_cache(request, "/api/generate", body)
+        if cached:
+            cached["model"] = model_name
+            cached["cached"] = True
+            return cached
 
     # Metrics: record start time
     start_time = time.time()
@@ -222,6 +259,17 @@ async def chat(request: Request):
     messages = body.get("messages", [])
     stream = body.get("stream", True)
     options = body.get("options", {})
+
+    # Sleep-time Compute: record query for prediction
+    _record_query(request, "/api/chat", body)
+
+    # Sleep-time Compute: check predictor cache (non-streaming only)
+    if not stream:
+        cached = _check_predictor_cache(request, "/api/chat", body)
+        if cached:
+            cached["model"] = model_name
+            cached["cached"] = True
+            return cached
 
     # Metrics: record start time
     start_time = time.time()

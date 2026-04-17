@@ -100,7 +100,7 @@ class CachedPrediction:
     """A single pre-computed prediction result."""
 
     __slots__ = ("prompt_hash", "model", "endpoint", "intent", "result",
-                 "created_at", "ttl_seconds", "confidence", "hit_count")
+                 "source_prompt", "created_at", "ttl_seconds", "confidence", "hit_count")
 
     def __init__(
         self,
@@ -111,12 +111,14 @@ class CachedPrediction:
         result: dict,
         ttl_seconds: float = 300.0,
         confidence: float = 0.0,
+        source_prompt: str = "",  # P0-2 fix: store original prompt for fuzzy match
     ):
         self.prompt_hash = prompt_hash
         self.model = model
         self.endpoint = endpoint
         self.intent = intent
         self.result = result
+        self.source_prompt = source_prompt[:500]
         self.created_at = time.time()
         self.ttl_seconds = ttl_seconds
         self.confidence = confidence
@@ -160,6 +162,7 @@ class QueryPredictor:
         self._history: list[dict] = []  # [{endpoint, model, prompt, intent, ts}]
         self._cache: dict[str, CachedPrediction] = {}
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()  # separate lock for stats (P0-1 fix)
         self._persist_path = persist_path
         self._stop_event = threading.Event()
         self._bg_thread: Optional[threading.Thread] = None
@@ -168,6 +171,11 @@ class QueryPredictor:
         # Load persisted stats
         if persist_path and persist_path.exists():
             self._load_stats()
+
+    def _inc_stat(self, key: str, delta: int = 1):
+        """Thread-safe stat increment (P0-1 fix)."""
+        with self._stats_lock:
+            self._stats[key] = self._stats.get(key, 0) + delta
 
     def set_manager(self, manager):
         """Set or update the model manager reference."""
@@ -258,6 +266,10 @@ class QueryPredictor:
 
         This is the core "sleep-time compute" operation: run inference
         for predicted queries before the user actually asks them.
+
+        WARNING: This method calls blocking inference (llama.create_completion).
+        Must only be called from background threads, NOT from async request
+        handlers. Thread-safe via internal locks.
         """
         if self._manager is None:
             logger.warning("QueryPredictor: no manager, cannot prewarm")
@@ -301,18 +313,22 @@ class QueryPredictor:
                     result={"response": text, "done": True},
                     ttl_seconds=self.DEFAULT_TTL,
                     confidence=pred["confidence"],
+                    source_prompt=full_prompt,  # P0-2 fix
                 )
 
                 with self._lock:
                     self._cache[cache_key] = cached
 
-                # Evict oldest if over limit (outside lock to avoid nested lock)
+                # Evict by lowest utility score (P1-2: weighted by confidence + hits)
                 with self._lock:
                     while len(self._cache) > self.MAX_CACHE:
-                        oldest_key = min(self._cache, key=lambda k: self._cache[k].created_at)
-                        del self._cache[oldest_key]
+                        def _utility(k):
+                            c = self._cache[k]
+                            return c.confidence * 0.6 + min(c.hit_count, 10) * 0.04
+                        worst_key = min(self._cache, key=_utility)
+                        del self._cache[worst_key]
 
-                self._stats["precomputations"] += 1
+                self._inc_stat("precomputations")
                 logger.info(
                     "Pre-computed prediction: intent=%s confidence=%.2f model=%s (%d chars)",
                     pred["intent"], pred["confidence"], pred["model"], len(text),
@@ -347,7 +363,7 @@ class QueryPredictor:
                 cached = self._cache[exact_key]
                 if not cached.expired:
                     cached.hit_count += 1
-                    self._stats["cache_hits"] += 1
+                    self._inc_stat("cache_hits")
                     logger.info("Cache HIT (exact): intent=%s model=%s", intent, model)
                     return cached.result
                 else:
@@ -362,23 +378,25 @@ class QueryPredictor:
                     # Simple word overlap check
                     if self._prompt_similarity(prompt, cached) > 0.4:
                         cached.hit_count += 1
-                        self._stats["cache_hits"] += 1
+                        self._inc_stat("cache_hits")
                         logger.info("Cache HIT (fuzzy): intent=%s model=%s", intent, model)
                         return cached.result
 
-        self._stats["cache_misses"] += 1
+        self._inc_stat("cache_misses")
         return None
 
     def _prompt_similarity(self, prompt: str, cached: CachedPrediction) -> float:
-        """Simple word-overlap similarity for fuzzy cache matching."""
-        cached_prompt_words = set(
-            (cached.result.get("response", "") or "").lower().split()[:50]
-        )
+        """Word-overlap similarity between query prompt and cached source prompt.
+
+        P0-2 fix: compares user query against the original prompt that generated
+        the cached result, NOT against the model's response.
+        """
+        cached_words = set(cached.source_prompt.lower().split())
         query_words = set(prompt.lower().split())
-        if not cached_prompt_words or not query_words:
+        if not cached_words or not query_words:
             return 0.0
-        overlap = len(cached_prompt_words & query_words)
-        return overlap / max(len(cached_prompt_words), len(query_words), 1)
+        overlap = len(cached_words & query_words)
+        return overlap / max(len(cached_words), len(query_words), 1)
 
     # ------------------------------------------------------------------
     # Background pre-warm thread
@@ -422,11 +440,13 @@ class QueryPredictor:
         with self._lock:
             cache_entries = len(self._cache)
             cache_sizes = {k: v.to_dict() for k, v in self._cache.items()}
+        with self._stats_lock:
+            stats_snapshot = dict(self._stats)
 
         return {
             "history_size": len(self._history),
             "cache_entries": cache_entries,
-            "stats": dict(self._stats),
+            "stats": stats_snapshot,
             "cache": cache_sizes,
         }
 

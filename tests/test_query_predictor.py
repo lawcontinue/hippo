@@ -257,3 +257,41 @@ class TestBackground:
         qp.stop_background()
         time.sleep(0.5)
         assert not qp._bg_thread.is_alive()
+
+
+# ── P0 fix regression tests ────────────────────────────────────────────
+
+class TestP0Fixes:
+    def test_p0_1_stats_thread_safe(self):
+        """P0-1 fix: _inc_stat must be thread-safe."""
+        import threading
+        qp = QueryPredictor()
+        n = 100
+
+        def inc_many():
+            for _ in range(n):
+                qp._inc_stat("cache_hits")
+
+        threads = [threading.Thread(target=inc_many) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert qp._stats["cache_hits"] == n * 5  # 500
+
+    def test_p0_2_fuzzy_match_uses_source_prompt(self):
+        """P0-2 fix: fuzzy match compares source_prompt, not response."""
+        qp = QueryPredictor()
+        key = "test_key"
+        # Cache with source_prompt "def fibonacci" but response "1 2 3 4 5"
+        qp._cache[key] = CachedPrediction(
+            prompt_hash=key, model="m", endpoint="/api/generate",
+            intent="code_define",
+            result={"response": "1 2 3 4 5 6 7 8 9 10"},
+            ttl_seconds=300, confidence=0.8,
+            source_prompt="def fibonacci(n): return result",
+        )
+        # Query with similar words to source_prompt, NOT to response
+        # "def fibonacci(n): return result" shares "def fibonacci return result" with query
+        hit = qp.lookup("/api/generate", {"prompt": "def fibonacci(n): return result", "model": "m"})
+        assert hit is not None  # fuzzy match should hit on source_prompt overlap

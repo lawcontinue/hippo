@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Request
 
 from hippo import __version__
+from hippo.dependencies import _check_auth
 
 router = APIRouter()
 
@@ -25,7 +26,12 @@ async def get_predictions(request: Request):
     """Get current query predictions and predictor statistics.
 
     Sleep-time Compute introspection endpoint.
+    P1-3: requires auth (same as inference endpoints).
     """
+    auth_result = await _check_auth(request)
+    if auth_result:
+        return auth_result
+
     predictor = getattr(request.app.state, "predictor", None)
     if not predictor:
         return {"enabled": False, "predictions": [], "stats": {}}

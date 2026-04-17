@@ -38,6 +38,7 @@ Reference: ollama/ollama#15619 (multi-model tier flags)
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -82,51 +83,59 @@ class RouteConfig:
         self._routes: dict[str, list[RouteEntry]] = {}
         self._default: Optional[RouteEntry] = None
         self._loaded = False
+        self._lock = threading.Lock()
 
     def load(self) -> bool:
-        """Load routes from JSON file. Returns True if loaded successfully."""
+        """Load routes from JSON file. Returns True if loaded successfully.
+
+        Thread-safe: uses double-checked locking to avoid redundant loads.
+        """
         if self._loaded:
             return True
 
-        if not self._path.exists():
-            logger.debug("No routes config at %s, using defaults", self._path)
+        with self._lock:
+            # Double-check after acquiring lock
+            if self._loaded:
+                return True
+
+            if not self._path.exists():
+                logger.debug("No routes config at %s, using defaults", self._path)
+                self._loaded = True
+                return False
+
+            try:
+                with open(self._path) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load routes from %s: %s", self._path, e)
+                return False
+
+            for entry in data.get("routes", []):
+                r = RouteEntry(
+                    intent=entry["intent"],
+                    model=entry["model"],
+                    priority=entry.get("priority", 1),
+                    params=entry.get("params", {}),
+                )
+                self._routes.setdefault(r.intent, []).append(r)
+                self._routes[r.intent].sort(key=lambda x: x.priority)
+
+            default = data.get("default")
+            if default:
+                self._default = RouteEntry(
+                    intent="default",
+                    model=default["model"],
+                    params=default.get("params", {}),
+                )
+
             self._loaded = True
-            return False
-
-        try:
-            with open(self._path) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to load routes from %s: %s", self._path, e)
-            return False
-
-        for entry in data.get("routes", []):
-            r = RouteEntry(
-                intent=entry["intent"],
-                model=entry["model"],
-                priority=entry.get("priority", 1),
-                params=entry.get("params", {}),
+            logger.info(
+                "Loaded %d routes from %s (default: %s)",
+                sum(len(v) for v in self._routes.values()),
+                self._path,
+                self._default.model if self._default else "none",
             )
-            self._routes.setdefault(r.intent, []).append(r)
-            # Sort by priority (lower = higher priority)
-            self._routes[r.intent].sort(key=lambda x: x.priority)
-
-        default = data.get("default")
-        if default:
-            self._default = RouteEntry(
-                intent="default",
-                model=default["model"],
-                params=default.get("params", {}),
-            )
-
-        self._loaded = True
-        logger.info(
-            "Loaded %d routes from %s (default: %s)",
-            sum(len(v) for v in self._routes.values()),
-            self._path,
-            self._default.model if self._default else "none",
-        )
-        return True
+            return True
 
     def resolve(self, intent: str) -> Optional[RouteEntry]:
         """Resolve an intent to a route entry. Returns None if no match."""

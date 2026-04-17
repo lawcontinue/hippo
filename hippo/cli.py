@@ -261,5 +261,52 @@ def quantize(
     quantize_model(input_path, output_path, format)
 
 
+@app.command()
+def prewarm(
+    models: list[str] = typer.Argument(None, help="Model names to pre-warm (default: all loaded)"),
+):
+    """Pre-warm loaded models by running a short inference to fill KV cache."""
+    config = load_config()
+    manager = ModelManager(config)
+
+    # Load all available models first if none specified
+    if not models:
+        available = manager.list_available()
+        models = [m["name"] for m in available]
+
+    typer.echo(f"Loading {len(models)} model(s)...")
+    for name in models:
+        try:
+            manager.get(name)
+            typer.echo(f"  ✅ Loaded: {name}")
+        except FileNotFoundError:
+            typer.echo(f"  ❌ Not found: {name}")
+
+    typer.echo("Pre-warming...")
+    manager.prewarm(list(models))
+    typer.echo("✅ Pre-warm complete")
+
+
+@app.command()
+def routes(
+    reload_flag: bool = typer.Option(False, "--reload", "-r", help="Reload routes from disk"),
+):
+    """Show or reload route configuration."""
+    from hippo.routes import RouteConfig
+
+    rc = RouteConfig()
+    if reload_flag:
+        rc.reload()
+        typer.echo("✅ Routes reloaded")
+    else:
+        route_list = rc.list_routes()
+        if not route_list:
+            typer.echo("No routes configured. Create ~/.hippo/routes.json")
+            return
+        for r in route_list:
+            params = f" params={r['params']}" if r.get("params") else ""
+            typer.echo(f"  {r['intent']:>10} → {r['model']}{params}")
+
+
 if __name__ == "__main__":
     app()

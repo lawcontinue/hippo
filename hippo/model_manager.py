@@ -15,12 +15,18 @@ logger = logging.getLogger("hippo")
 
 
 class ModelManager:
-    """Manages loaded models with lazy loading and auto-unload."""
+    """Manages loaded models with lazy loading and auto-unload.
+
+    Uses LFRU (Least-Frequent-Recently-Used) eviction: tracks both
+    access frequency and recency. High-frequency models are retained
+    longer than low-frequency ones, even if accessed less recently.
+    """
 
     def __init__(self, config: HippoConfig):
         self.config = config
         self._loaded: dict[str, Llama] = {}
         self._last_used: dict[str, float] = {}
+        self._access_count: dict[str, int] = {}  # LFRU: frequency tracking
         self._lock = threading.Lock()
         self._model_locks: dict[str, threading.Lock] = {}
         self._stop_event = threading.Event()
@@ -166,6 +172,7 @@ class ModelManager:
         with self._lock:
             if name in self._loaded:
                 self._last_used[name] = time.time()
+                self._access_count[name] = self._access_count.get(name, 0) + 1
                 return self._loaded[name]
 
         # Per-model lock prevents concurrent loading of the same model
@@ -175,6 +182,7 @@ class ModelManager:
             with self._lock:
                 if name in self._loaded:
                     self._last_used[name] = time.time()
+                    self._access_count[name] = self._access_count.get(name, 0) + 1
                     return self._loaded[name]
 
             return self._load(name)
@@ -221,6 +229,7 @@ class ModelManager:
         with self._lock:
             self._loaded[name] = llama
             self._last_used[name] = time.time()
+            self._access_count[name] = self._access_count.get(name, 0) + 1
 
         # Metrics: record model load
         metrics.models_loaded.labels(model=name).set(1)
@@ -233,14 +242,17 @@ class ModelManager:
         return llama
 
     def _evict_if_needed(self, incoming_path: Path):
-        """Evict least-recently-used models if memory limit would be exceeded."""
+        """Evict least-frequent-recently-used models if memory limit would be exceeded.
+
+        LFRU strategy: score = frequency / recency_age. Lower score = evict first.
+        High-frequency models survive longer than low-frequency ones.
+        """
         limit_gb = self.config.max_memory_gb
         if limit_gb <= 0:
             return
 
         incoming_gb = incoming_path.stat().st_size / (1024 ** 3)
 
-        # Calculate current memory usage from loaded models
         with self._lock:
             loaded_names = list(self._loaded.keys())
 
@@ -250,22 +262,29 @@ class ModelManager:
             if p:
                 current_gb += p.stat().st_size / (1024 ** 3)
 
+        now = time.time()
         while current_gb + incoming_gb > limit_gb and loaded_names:
-            # Find LRU
+            # LFRU score: freq / age. Lower = evict first.
             with self._lock:
-                lru_name = min(loaded_names, key=lambda n: self._last_used.get(n, 0))
-            self.unload(lru_name)
-            p = self._resolve_model_path(lru_name)
+                def _lfru_score(n):
+                    freq = max(self._access_count.get(n, 1), 1)
+                    age = max(now - self._last_used.get(n, now), 1.0)
+                    return freq / age
+                victim = min(loaded_names, key=_lfru_score)
+                victim_freq = self._access_count.get(victim, 0)
+            self.unload(victim)
+            p = self._resolve_model_path(victim)
             if p:
                 current_gb -= p.stat().st_size / (1024 ** 3)
-            loaded_names.remove(lru_name)
-            logger.info("LRU evicted '%s' to free memory", lru_name)
+            loaded_names.remove(victim)
+            logger.info("LFRU evicted '%s' (freq=%d) to free memory", victim, victim_freq)
 
     def unload(self, name: str) -> bool:
         """Unload a model from memory. Returns True if it was loaded."""
         with self._lock:
             llama = self._loaded.pop(name, None)
             self._last_used.pop(name, None)
+            # Note: keep _access_count for LFRU history (respects past popularity)
 
         if llama is not None:
             # Metrics: remove model load
@@ -279,9 +298,16 @@ class ModelManager:
         return False
 
     def list_loaded(self) -> list[dict]:
-        """List currently loaded models with last-used timestamps."""
+        """List currently loaded models with last-used timestamps and access counts."""
         with self._lock:
-            return [{"name": n, "last_used": self._last_used.get(n, 0)} for n in self._loaded]
+            return [
+                {
+                    "name": n,
+                    "last_used": self._last_used.get(n, 0),
+                    "access_count": self._access_count.get(n, 0),
+                }
+                for n in self._loaded
+            ]
 
     def list_available(self) -> list[dict]:
         """List all available GGUF models on disk."""
@@ -299,6 +325,37 @@ class ModelManager:
                 "loaded": loaded,
             })
         return models
+
+    def prewarm(self, model_names: list[str] | None = None):
+        """Pre-warm models by running a short inference to fill KV cache.
+
+        If model_names is None, pre-warms all currently loaded models.
+        Models must already be loaded (via get() or explicit load).
+        """
+        if model_names is None:
+            with self._lock:
+                model_names = list(self._loaded.keys())
+
+        for name in model_names:
+            with self._lock:
+                llama = self._loaded.get(name)
+
+            if llama is None:
+                logger.warning("Pre-warm: model '%s' not loaded, skipping", name)
+                continue
+
+            try:
+                start = time.time()
+                # Short inference to populate KV cache and GPU memory
+                llama.create_completion(
+                    prompt=" ",
+                    max_tokens=1,
+                    temperature=0.0,
+                )
+                elapsed = time.time() - start
+                logger.info("Pre-warmed model '%s' in %.2fs", name, elapsed)
+            except Exception as e:
+                logger.warning("Pre-warm failed for '%s': %s", name, e)
 
     def unload_all(self):
         """Unload all models."""

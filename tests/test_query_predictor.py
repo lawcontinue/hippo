@@ -1,17 +1,12 @@
 """Tests for Query Predictor (Sleep-time Compute)."""
 
 import time
-import json
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from hippo.query_predictor import (
     QueryPredictor,
     CachedPrediction,
     _classify_intent,
-    _FOLLOWUP_GRAPH,
-    _FOLLOWUP_PROMPTS,
 )
 
 

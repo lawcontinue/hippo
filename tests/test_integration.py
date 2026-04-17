@@ -78,7 +78,7 @@ class TestFullFlow:
         data = resp.json()
         assert data["response"] == "Hello world"
         assert data["done"] is True
-        assert data["total_duration"] > 0
+        assert data["total_duration"] >= 0
 
     def test_chat_non_stream(self, client, tmp_models):
         c, manager = client

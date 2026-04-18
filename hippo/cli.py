@@ -354,15 +354,8 @@ def gateway(
 
     # Wire into FastAPI app
     api.app.state.cluster_gateway = gw
+    api.app.state._cluster_gateway = gw  # picked up by lifespan
     api.app.include_router(gw.router)
-
-    @api.app.on_event("startup")
-    async def _start_gateway():
-        await gw.start()
-
-    @api.app.on_event("shutdown")
-    async def _stop_gateway():
-        await gw.stop()
 
     typer.echo(f"🦛 Hippo Gateway starting on {host}:{port}")
     typer.echo(f"   mDNS discovery: {'enabled' if not no_discovery else 'disabled'}")
@@ -415,14 +408,7 @@ def worker(
     api.app.state.config = cfg
     api.app.state.manager = __import__("hippo.model_manager", fromlist=["ModelManager"]).ModelManager(cfg)
     api.app.state.manager.start_cleanup_thread()
-
-    @api.app.on_event("startup")
-    async def _start_worker():
-        await w.start()
-
-    @api.app.on_event("shutdown")
-    async def _stop_worker():
-        await w.stop()
+    api.app.state._cluster_worker = w  # picked up by lifespan
 
     typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
     typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")

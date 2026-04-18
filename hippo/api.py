@@ -70,7 +70,25 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(_precache())
 
+    # Start cluster worker/gateway if configured
+    cluster_worker = getattr(app.state, "_cluster_worker", None)
+    cluster_gateway = getattr(app.state, "_cluster_gateway", None)
+    if cluster_worker:
+        logger.info("Starting cluster worker...")
+        await cluster_worker.start()
+    if cluster_gateway:
+        logger.info("Starting cluster gateway...")
+        await cluster_gateway.start()
+
     yield
+
+    # Shutdown cluster
+    if cluster_worker:
+        logger.info("Stopping cluster worker...")
+        await cluster_worker.stop()
+    if cluster_gateway:
+        logger.info("Stopping cluster gateway...")
+        await cluster_gateway.stop()
 
     # Shutdown
     predictor = getattr(app.state, "predictor", None)

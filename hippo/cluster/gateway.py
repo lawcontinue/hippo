@@ -133,7 +133,8 @@ class GatewayService:
 
         if assignment:
             worker = self._scheduler.get_worker(assignment.worker_id)
-            if worker and worker.status == "healthy":
+            if worker and worker.status in ("healthy", "unhealthy"):
+                # Route even to "unhealthy" workers — they may just have a delayed heartbeat
                 url = f"http://{worker.host}:{worker.port}/v1/completions"
                 payload = {
                     "model": request.model,

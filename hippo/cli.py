@@ -352,16 +352,20 @@ def gateway(
 
     gw = GatewayService(port=port)
 
-    # Wire into FastAPI app
-    api.app.state.cluster_gateway = gw
-    api.app.state._cluster_gateway = gw  # picked up by lifespan
-    api.app.include_router(gw.router)
+    # Create a fresh app instance
+    from hippo.config import HippoConfig as _HC
+    from hippo.model_manager import ModelManager as _MM
+    from hippo.api import create_app
+
+    app = create_app(config=_HC(), manager=_MM(_HC()))
+    app.state._cluster_gateway = gw
+    app.include_router(gw.router)
 
     typer.echo(f"🦛 Hippo Gateway starting on {host}:{port}")
     typer.echo(f"   mDNS discovery: {'enabled' if not no_discovery else 'disabled'}")
     typer.echo(f"   Workers can register at http://{host}:{port}/cluster/register")
 
-    uvicorn.run(api.app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 @app.command()
@@ -405,17 +409,20 @@ def worker(
 
     w = WorkerService(worker_config)
 
-    api.app.state.config = cfg
-    api.app.state.manager = __import__("hippo.model_manager", fromlist=["ModelManager"]).ModelManager(cfg)
-    api.app.state.manager.start_cleanup_thread()
-    api.app.state._cluster_worker = w  # picked up by lifespan
+    # Create a fresh app instance (not lazy default) to avoid __getattr__ issues
+    from hippo.config import HippoConfig as _HC
+    from hippo.model_manager import ModelManager as _MM
+    from hippo.api import create_app
+
+    app = create_app(config=cfg, manager=_MM(cfg))
+    app.state._cluster_worker = w
 
     typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
     typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")
     if gateway_url:
         typer.echo(f"   Gateway: {gateway_url}")
 
-    uvicorn.run(api.app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ class WorkerService:
         self._discovery = DiscoveryService(
             role="worker", port=self.config.worker_port, node_info=node_info
         )
-        self._discovery.start_broadcast()
+        await self._discovery.start_broadcast_async()
 
         logger.info(f"Worker {self._id} started and registered")
 

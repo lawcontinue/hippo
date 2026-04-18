@@ -7,8 +7,10 @@ Uses zeroconf to broadcast and discover Hippo instances on the LAN.
 
 import logging
 import socket
+import asyncio
 from typing import Callable, Optional
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 
 from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo, ServiceStateChange
 from zeroconf import IPVersion
@@ -60,9 +62,10 @@ class DiscoveryService:
         self._service_info: Optional[ServiceInfo] = None
         self._discovered: dict[str, NodeInfo] = {}
         self._on_change: Optional[Callable] = None
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hippo-mdns")
 
     def start_broadcast(self, extra_props: Optional[dict] = None):
-        """Broadcast this node's presence via mDNS."""
+        """Broadcast this node's presence via mDNS (blocking, call from thread)."""
         if self._zeroconf is None:
             self._zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
 
@@ -92,6 +95,11 @@ class DiscoveryService:
 
         self._zeroconf.register_service(self._service_info)
         logger.info(f"Broadcasting as {instance_name} at {local_ip}:{self.port}")
+
+    async def start_broadcast_async(self, extra_props: Optional[dict] = None):
+        """Async wrapper — runs start_broadcast in a thread to avoid blocking event loop."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self._executor, self.start_broadcast, extra_props)
 
     def stop_broadcast(self):
         """Stop broadcasting."""

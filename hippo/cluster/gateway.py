@@ -92,8 +92,8 @@ class GatewayService:
         self._running = True
         await self._transport.start()
 
-        # Broadcast via mDNS
-        self._discovery.start_broadcast()
+        # Broadcast via mDNS (async to avoid blocking event loop)
+        await self._discovery.start_broadcast_async()
 
         # Start worker cleanup loop
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())

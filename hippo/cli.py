@@ -326,5 +326,111 @@ def routes(
             typer.echo(f"  {r['intent']:>10} → {r['model']}{params}")
 
 
+@app.command()
+def gateway(
+    host: str = typer.Option("0.0.0.0", "--host", "-H", help="Bind host"),
+    port: int = typer.Option(11434, "--port", "-p", help="Bind port"),
+    name: str = typer.Option("hippo-gateway", "--name", "-n", help="Gateway name"),
+    no_discovery: bool = typer.Option(False, "--no-mdns", help="Disable mDNS discovery"),
+):
+    """Start as a cluster Gateway (coordinator node).
+
+    The Gateway:
+    - Accepts Worker registrations via mDNS or HTTP
+    - Routes inference requests to the best Worker
+    - Handles failover on Worker failures
+    """
+    import asyncio
+    import uvicorn
+    from hippo.cluster.gateway import GatewayService
+    from hippo import api
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    gw = GatewayService(port=port)
+
+    # Wire into FastAPI app
+    api.app.state.cluster_gateway = gw
+    api.app.include_router(gw.router)
+
+    @api.app.on_event("startup")
+    async def _start_gateway():
+        await gw.start()
+
+    @api.app.on_event("shutdown")
+    async def _stop_gateway():
+        await gw.stop()
+
+    typer.echo(f"🦛 Hippo Gateway starting on {host}:{port}")
+    typer.echo(f"   mDNS discovery: {'enabled' if not no_discovery else 'disabled'}")
+    typer.echo(f"   Workers can register at http://{host}:{port}/cluster/register")
+
+    uvicorn.run(api.app, host=host, port=port, log_level="info")
+
+
+@app.command()
+def worker(
+    name: str = typer.Option("", "--name", "-n", help="Worker name (auto-generated if empty)"),
+    port: int = typer.Option(11435, "--port", "-p", help="Worker listen port"),
+    gateway_url: str = typer.Option("", "--gateway", "-g", help="Gateway URL (overrides mDNS)"),
+    memory: float = typer.Option(13.0, "--memory", "-m", help="Available memory in GB"),
+    models_dir: str = typer.Option("", "--models-dir", help="Models directory"),
+    no_discovery: bool = typer.Option(False, "--no-mdns", help="Disable mDNS"),
+):
+    """Start as a cluster Worker node.
+
+    The Worker:
+    - Registers with the Gateway via mDNS or HTTP
+    - Sends periodic heartbeats
+    - Serves inference requests on its local port
+    """
+    import asyncio
+    import uvicorn
+    from hippo.cluster.worker import WorkerService, WorkerConfig
+    from hippo import api
+    from hippo.config import load_config
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    cfg = load_config()
+    cfg.server.host = "0.0.0.0"
+    cfg.server.port = port
+
+    worker_config = WorkerConfig(
+        gateway_host=gateway_url.split("//")[1].split(":")[0] if gateway_url and "//" in gateway_url else (gateway_url or None),
+        gateway_port=11434,
+        worker_port=port,
+        gpu_memory_gb=memory,
+        models_dir=models_dir or str(cfg.models_dir),
+    )
+
+    w = WorkerService(worker_config)
+
+    api.app.state.config = cfg
+    api.app.state.manager = __import__("hippo.model_manager", fromlist=["ModelManager"]).ModelManager(cfg)
+    api.app.state.manager.start_cleanup_thread()
+
+    @api.app.on_event("startup")
+    async def _start_worker():
+        await w.start()
+
+    @api.app.on_event("shutdown")
+    async def _stop_worker():
+        await w.stop()
+
+    typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
+    typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")
+    if gateway_url:
+        typer.echo(f"   Gateway: {gateway_url}")
+
+    uvicorn.run(api.app, host="0.0.0.0", port=port, log_level="info")
+
+
 if __name__ == "__main__":
     app()

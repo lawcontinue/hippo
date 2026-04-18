@@ -1,0 +1,85 @@
+{
+  "routes": [
+    {
+      "intent": "code",
+      "model": "qwen3.6:35b-a3b-coding-nvfp4",
+      "priority": 1,
+      "params": {
+        "temperature": 0.3,
+        "num_ctx": 32768
+      },
+      "comment": "Agentic coding specialist, only 3B active params, fast. nvfp4 quantized 22GB."
+    },
+    {
+      "intent": "think",
+      "model": "qwen3.6:35b-a3b",
+      "priority": 1,
+      "params": {
+        "temperature": 0.6,
+        "num_ctx": 32768
+      },
+      "comment": "Reasoning with thinking mode, MoE 35B/3B active, 24GB default quant."
+    },
+    {
+      "intent": "vision",
+      "model": "gemma4:31b",
+      "priority": 1,
+      "params": {
+        "temperature": 0.7,
+        "num_ctx": 32768
+      },
+      "comment": "Multimodal (text+image), dense 31B, 18.5GB. 256K context support."
+    },
+    {
+      "intent": "tool",
+      "model": "gemma4:26b",
+      "priority": 1,
+      "params": {
+        "temperature": 0.4,
+        "num_ctx": 16384
+      },
+      "comment": "Function calling / agentic workflows, MoE 26B/4B active, 16.8GB."
+    },
+    {
+      "intent": "fast",
+      "model": "qwen3.6:35b-a3b",
+      "priority": 1,
+      "params": {
+        "temperature": 0.5,
+        "num_ctx": 8192
+      },
+      "comment": "Quick responses, MoE only activates 3B params, low latency."
+    },
+    {
+      "intent": "embed",
+      "model": "bge-m3:latest",
+      "priority": 1,
+      "params": {},
+      "comment": "Embedding model, 1.2GB. Not for chat."
+    }
+  ],
+  "default": {
+    "model": "qwen3.6:35b-a3b",
+    "params": {
+      "temperature": 0.5,
+      "num_ctx": 32768
+    }
+  },
+  "_meta": {
+    "updated": "2026-04-18",
+    "hardware": "48GB VRAM",
+    "strategy": "Qwen3.6 MoE coding+reasoning (常驻) + Gemma4 dense multimodal (按需)",
+    "memory_budget": {
+      "qwen3.6_coding_nvfp4": "22 GB",
+      "gemma4_31b": "18.5 GB",
+      "total_both": "40.5 GB",
+      "remaining_for_kv": "7.5 GB",
+      "note": "Use 32K ctx to fit KV; 256K requires single-model mode"
+    },
+    "sources": [
+      "https://ollama.com/library/qwen3.6",
+      "https://ollama.com/library/gemma4",
+      "https://modelscope.cn/models/Qwen/Qwen3.6-35B-A3B"
+    ]
+  }
+}

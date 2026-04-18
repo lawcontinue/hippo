@@ -11,7 +11,6 @@ A Worker:
 import os
 import time
 import uuid
-import socket
 import logging
 import asyncio
 import platform
@@ -53,10 +52,7 @@ class WorkerService:
     def __init__(self, config: WorkerConfig):
         self.config = config
         self._id = f"worker-{uuid.uuid4().hex[:8]}"
-        self._discovery = DiscoveryService(
-            role="worker",
-            port=config.worker_port,
-        )
+        self._discovery: Optional[DiscoveryService] = None
         self._gateway_url: Optional[str] = None
         self._registered = False
         self._heartbeat_task: Optional[asyncio.Task] = None
@@ -64,6 +60,8 @@ class WorkerService:
         self._session: Optional[aiohttp.ClientSession] = None
         self._models: list[str] = []
         self._gpu_memory_gb = config.gpu_memory_gb
+        self._gpu_memory_used_gb: float = 0.0
+        self._loaded_models: list[str] = []
 
     async def start(self):
         """Start the worker: auto-detect resources, find gateway, register."""
@@ -84,23 +82,25 @@ class WorkerService:
             logger.warning("No gateway found, running in standalone mode")
             return
 
-        # Register
+        # Register via HTTP (authoritative)
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
         await self._register()
 
         # Start heartbeat
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # Start broadcast for other nodes to discover us
+        # Also broadcast via mDNS so other tools can discover us
         node_info = NodeInfo(
             name=self._id,
-            host=self._get_local_ip(),
+            host=DiscoveryService._get_local_ip(),
             port=self.config.worker_port,
             role="worker",
             gpu_memory_gb=self._gpu_memory_gb,
             models=self._models,
         )
-        self._discovery = DiscoveryService(role="worker", port=self.config.worker_port, node_info=node_info)
+        self._discovery = DiscoveryService(
+            role="worker", port=self.config.worker_port, node_info=node_info
+        )
         self._discovery.start_broadcast()
 
         logger.info(f"Worker {self._id} started and registered")
@@ -129,7 +129,9 @@ class WorkerService:
         if self._session:
             await self._session.close()
 
-        self._discovery.shutdown()
+        if self._discovery:
+            self._discovery.shutdown()
+
         logger.info(f"Worker {self._id} stopped")
 
     def _detect_capabilities(self):
@@ -142,7 +144,6 @@ class WorkerService:
             logger.info("Detected Apple Silicon — MLX mode")
             self.config.mlx_preferred = True
             if self._gpu_memory_gb == 0:
-                # Get total memory on macOS
                 try:
                     import subprocess
                     result = subprocess.run(
@@ -150,14 +151,13 @@ class WorkerService:
                         capture_output=True, text=True
                     )
                     total_mem_gb = int(result.stdout.strip()) / (1024**3)
-                    # Reserve 3GB for system
                     self._gpu_memory_gb = max(0, total_mem_gb - 3.0)
                 except Exception:
-                    self._gpu_memory_gb = 13.0  # safe default for 16GB Mac
+                    self._gpu_memory_gb = 13.0
         else:
             self.config.mlx_preferred = False
             if self._gpu_memory_gb == 0:
-                self._gpu_memory_gb = 12.0  # default for Windows 16GB
+                self._gpu_memory_gb = 12.0
 
         # Scan available models
         models_dir = os.path.expanduser(self.config.models_dir)
@@ -177,20 +177,22 @@ class WorkerService:
         logger.info("Discovering gateway via mDNS...")
         gateway_found = asyncio.Event()
 
+        disc = DiscoveryService(role="worker", port=self.config.worker_port)
+
         def on_node(event: str, node: NodeInfo):
             if event == "added" and node.role == "gateway":
                 self._gateway_url = f"http://{node.host}:{node.port}"
                 logger.info(f"Found gateway at {self._gateway_url}")
                 gateway_found.set()
 
-        self._discovery.start_browse(on_node)
+        disc.start_browse(on_node)
 
         try:
             await asyncio.wait_for(gateway_found.wait(), timeout=REGISTRATION_TIMEOUT)
         except asyncio.TimeoutError:
             logger.warning("Gateway discovery timed out")
         finally:
-            self._discovery.stop_browse()
+            disc.shutdown()
 
     async def _register(self):
         """Register this worker with the gateway."""
@@ -199,7 +201,7 @@ class WorkerService:
 
         payload = {
             "worker_id": self._id,
-            "host": self._get_local_ip(),
+            "host": DiscoveryService._get_local_ip(),
             "port": self.config.worker_port,
             "gpu_memory_gb": self._gpu_memory_gb,
             "mlx": self.config.mlx_preferred,
@@ -222,7 +224,11 @@ class WorkerService:
             logger.error(f"Registration error: {e}")
 
     async def _heartbeat_loop(self):
-        """Periodic heartbeat to gateway."""
+        """Periodic heartbeat to gateway.
+
+        TODO(Phase 1): Track actual loaded_models and gpu_memory_used_gb
+        from the local ModelManager instead of using placeholder values.
+        """
         while self._running:
             try:
                 if self._session and self._gateway_url:
@@ -231,8 +237,8 @@ class WorkerService:
                         json={
                             "worker_id": self._id,
                             "status": "healthy",
-                            "loaded_models": [],  # TODO: track actual loaded models
-                            "gpu_memory_used_gb": 0.0,  # TODO: track actual usage
+                            "loaded_models": self._loaded_models,
+                            "gpu_memory_used_gb": self._gpu_memory_used_gb,
                         },
                     ) as resp:
                         if resp.status != 200:
@@ -242,6 +248,10 @@ class WorkerService:
 
             await asyncio.sleep(self.config.heartbeat_interval)
 
-    @staticmethod
-    def _get_local_ip() -> str:
-        return DiscoveryService._get_local_ip()
+    def update_loaded_models(self, models: list[str], memory_used_gb: float):
+        """Update tracked loaded models and memory usage.
+
+        Called by the local inference engine when models are loaded/unloaded.
+        """
+        self._loaded_models = models
+        self._gpu_memory_used_gb = memory_used_gb

@@ -1,10 +1,8 @@
 """Tests for Hippo cluster module — Phase 0 validation."""
 
-import asyncio
 import pytest
 from hippo.cluster.discovery import DiscoveryService, NodeInfo
 from hippo.cluster.scheduler import Scheduler
-from hippo.cluster.gateway import GatewayService
 from hippo.cluster.worker import WorkerService, WorkerConfig
 
 
@@ -31,12 +29,18 @@ class TestScheduler:
         s.deregister_worker("w1")
         assert "w1" not in s._workers
 
+    def test_deregister_orphaned_models(self):
+        s = Scheduler()
+        s.register_worker("w1", "192.168.1.10", 11435, 13.0, ["model-a"])
+        assert s.get_assignment("model-a") is not None
+        s.deregister_worker("w1")
+        assert s.get_assignment("model-a") is None
+
     def test_find_worker_for_model(self):
         s = Scheduler()
         s.register_worker("w1", "192.168.1.10", 11435, 13.0, ["model-a"])
         s.register_worker("w2", "192.168.1.11", 11435, 8.0, ["model-b"])
 
-        # model-a needs 5GB — both can fit, w1 has fewer assignments
         w = s.find_worker_for_model("model-a", 5.0)
         assert w is not None
         assert w.worker_id == "w1"
@@ -68,6 +72,21 @@ class TestScheduler:
         assert status["healthy_workers"] == 2
         assert status["total_gpu_memory_gb"] == 21.0
 
+    def test_get_worker(self):
+        s = Scheduler()
+        s.register_worker("w1", "192.168.1.10", 11435, 13.0, ["a"])
+        w = s.get_worker("w1")
+        assert w is not None
+        assert w.host == "192.168.1.10"
+        assert s.get_worker("nonexistent") is None
+
+    def test_unhealthy_worker_excluded(self):
+        s = Scheduler()
+        s.register_worker("w1", "192.168.1.10", 11435, 13.0, [])
+        s._workers["w1"].status = "unhealthy"
+        w = s.find_worker_for_model("model", 5.0)
+        assert w is None
+
 
 class TestDiscoveryService:
     """Test mDNS discovery (local only, no network required)."""
@@ -75,12 +94,16 @@ class TestDiscoveryService:
     def test_get_local_ip(self):
         ip = DiscoveryService._get_local_ip()
         assert ip != "0.0.0.0"
-        assert "." in ip  # IPv4
+        assert "." in ip
 
     def test_parse_service_info_with_none(self):
-        # Should handle None gracefully
         result = DiscoveryService._parse_service_info("test", None)
         assert result is None
+
+    def test_shutdown_without_start(self):
+        """Shutdown should not raise if nothing was started."""
+        disc = DiscoveryService(role="worker")
+        disc.shutdown()  # should not raise
 
 
 class TestWorkerConfig:
@@ -99,6 +122,19 @@ class TestWorkerConfig:
         )
         assert cfg.gateway_host == "192.168.1.10"
         assert cfg.gpu_memory_gb == 8.0
+
+
+class TestWorkerService:
+    """Test WorkerService (no network)."""
+
+    def test_update_loaded_models(self):
+        ws = WorkerService(WorkerConfig())
+        assert ws._loaded_models == []
+        assert ws._gpu_memory_used_gb == 0.0
+
+        ws.update_loaded_models(["model-a", "model-b"], 5.2)
+        assert ws._loaded_models == ["model-a", "model-b"]
+        assert ws._gpu_memory_used_gb == 5.2
 
 
 if __name__ == "__main__":

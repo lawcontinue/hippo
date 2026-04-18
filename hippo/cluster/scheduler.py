@@ -93,6 +93,10 @@ class Scheduler:
         """Get the worker assigned to a model."""
         return self._assignments.get(model)
 
+    def get_worker(self, worker_id: str) -> Optional[WorkerState]:
+        """Get a worker by ID."""
+        return self._workers.get(worker_id)
+
     def find_worker_for_model(self, model: str, model_size_gb: float) -> Optional[WorkerState]:
         """Find the best worker for a model.
 

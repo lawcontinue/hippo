@@ -13,12 +13,12 @@ import logging
 import asyncio
 from typing import Optional
 
-import aiohttp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from hippo.cluster.discovery import DiscoveryService, NodeInfo
-from hippo.cluster.scheduler import Scheduler, WorkerState
+from hippo.cluster.scheduler import Scheduler
+from hippo.cluster.transport import Transport
 
 logger = logging.getLogger("hippo.cluster.gateway")
 
@@ -65,7 +65,7 @@ class GatewayService:
 
     Usage:
         gw = GatewayService()
-        await gw.start()  # starts mDNS broadcast + cleanup loop
+        await gw.start()
 
         # Expose REST API via FastAPI router
         app.include_router(gw.router)
@@ -77,10 +77,10 @@ class GatewayService:
         self.port = port
         self._scheduler = Scheduler()
         self._discovery = DiscoveryService(role="gateway", port=port)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._transport = Transport()
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
-        self._local_manager = None  # fallback to local ModelManager
+        self._local_manager = None
 
         # FastAPI router for cluster endpoints
         self.router = APIRouter(prefix="/cluster", tags=["cluster"])
@@ -90,9 +90,7 @@ class GatewayService:
         """Start the gateway."""
         logger.info(f"Starting gateway on port {self.port}")
         self._running = True
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=120)
-        )
+        await self._transport.start()
 
         # Broadcast via mDNS
         self._discovery.start_broadcast()
@@ -100,7 +98,8 @@ class GatewayService:
         # Start worker cleanup loop
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-        # Also browse for workers that might already be running
+        # Browse for workers via mDNS — but do NOT double-register:
+        # mDNS discovery only provides awareness, HTTP /register is authoritative
         self._discovery.start_browse(self._on_node_discovered)
 
         logger.info("Gateway started")
@@ -117,9 +116,7 @@ class GatewayService:
                 pass
 
         self._discovery.shutdown()
-
-        if self._session:
-            await self._session.close()
+        await self._transport.stop()
 
         logger.info("Gateway stopped")
 
@@ -135,9 +132,8 @@ class GatewayService:
         assignment = self._scheduler.get_assignment(request.model)
 
         if assignment:
-            worker = self._scheduler._workers.get(assignment.worker_id)
+            worker = self._scheduler.get_worker(assignment.worker_id)
             if worker and worker.status == "healthy":
-                # Forward to worker
                 url = f"http://{worker.host}:{worker.port}/v1/completions"
                 payload = {
                     "model": request.model,
@@ -147,20 +143,15 @@ class GatewayService:
                     "stream": request.stream,
                 }
                 try:
-                    async with self._session.post(url, json=payload) as resp:
-                        if resp.status == 200:
-                            return await resp.json()
-                        else:
-                            logger.warning(f"Worker {worker.worker_id} returned {resp.status}")
+                    return await self._transport.post(url, payload)
                 except Exception as e:
                     logger.error(f"Worker {worker.worker_id} error: {e}")
-                    # Mark unhealthy and try fallback
                     worker.status = "unhealthy"
 
         # Fallback: local inference
         if self._local_manager:
             logger.info(f"Using local fallback for model {request.model}")
-            # TODO: call local ModelManager
+            # TODO(Phase 1): call local ModelManager for fallback inference
             return {"error": "local fallback not yet implemented"}
 
         raise HTTPException(status_code=503, detail=f"No worker available for model {request.model}")
@@ -170,34 +161,50 @@ class GatewayService:
         return self._scheduler.get_cluster_status()
 
     def _on_node_discovered(self, event: str, node: NodeInfo):
-        """Handle discovered nodes via mDNS."""
+        """Handle discovered nodes via mDNS.
+
+        mDNS discovery provides visibility only. Actual registration
+        happens via HTTP POST /cluster/register from the worker,
+        which is authoritative and carries full capabilities info.
+        """
         if event == "added" and node.role == "worker":
-            self._scheduler.register_worker(
-                worker_id=node.name,
-                host=node.host,
-                port=node.port,
-                gpu_memory_gb=node.gpu_memory_gb,
-                models=node.models,
-                mlx="mlx" in node.properties.get("platform", "").lower(),
+            logger.info(
+                f"mDNS: Worker {node.name} seen at {node.host}:{node.port}, "
+                f"awaiting HTTP registration"
             )
+        elif event == "removed":
+            # mDNS removal is a signal the worker is gone
+            worker = self._scheduler.get_worker(node.name)
+            if worker:
+                logger.warning(f"mDNS: Worker {node.name} disappeared, marking offline")
+                worker.status = "offline"
 
     async def _cleanup_loop(self):
         """Periodically check for unhealthy workers."""
         while self._running:
             now = time.time()
-            for w in list(self._scheduler._workers.values()):
-                if w.last_heartbeat > 0 and (now - w.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                    if w.status != "unhealthy":
-                        logger.warning(f"Worker {w.worker_id} heartbeat timeout, marking unhealthy")
-                        w.status = "unhealthy"
-                if w.last_heartbeat > 0 and (now - w.last_heartbeat) > HEARTBEAT_TIMEOUT * 4:
-                    logger.warning(f"Worker {w.worker_id} offline, deregistering")
-                    self._scheduler.deregister_worker(w.worker_id)
+            status = self._scheduler.get_cluster_status()
+            for w_detail in status["workers_detail"]:
+                wid = w_detail["id"]
+                worker = self._scheduler.get_worker(wid)
+                if not worker or worker.last_heartbeat == 0:
+                    continue
+                elapsed = now - worker.last_heartbeat
+                if elapsed > HEARTBEAT_TIMEOUT and worker.status != "unhealthy":
+                    logger.warning(f"Worker {wid} heartbeat timeout ({elapsed:.0f}s), marking unhealthy")
+                    worker.status = "unhealthy"
+                if elapsed > HEARTBEAT_TIMEOUT * 4:
+                    logger.warning(f"Worker {wid} offline (no heartbeat for {elapsed:.0f}s), deregistering")
+                    self._scheduler.deregister_worker(wid)
 
             await asyncio.sleep(CLEANUP_INTERVAL)
 
     def _setup_routes(self):
-        """Set up FastAPI routes for cluster management."""
+        """Set up FastAPI routes for cluster management.
+
+        TODO(Phase 2): Add authentication (API key or mTLS) to prevent
+        unauthorized registration on shared networks.
+        """
 
         @self.router.post("/register")
         async def register_worker(req: RegisterRequest):
@@ -209,6 +216,7 @@ class GatewayService:
                 models=req.models,
                 mlx=req.mlx,
             )
+            logger.info(f"Worker {req.worker_id} registered via HTTP from {req.host}")
             return {"status": "ok", "worker_id": req.worker_id}
 
         @self.router.post("/heartbeat")

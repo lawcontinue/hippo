@@ -343,7 +343,9 @@ def gateway(
     import asyncio
     import uvicorn
     from hippo.cluster.gateway import GatewayService
-    from hippo import api
+    from hippo.config import HippoConfig as _HC
+    from hippo.model_manager import ModelManager as _MM
+    from hippo.api import create_app
 
     logging.basicConfig(
         level=logging.INFO,
@@ -352,12 +354,11 @@ def gateway(
 
     gw = GatewayService(port=port)
 
-    # Create a fresh app instance
-    from hippo.config import HippoConfig as _HC
-    from hippo.model_manager import ModelManager as _MM
-    from hippo.api import create_app
+    cfg = _HC()
+    cfg.server.host = host
+    cfg.server.port = port
 
-    app = create_app(config=_HC(), manager=_MM(_HC()))
+    app = create_app(config=cfg, manager=_MM(cfg))
     app.state._cluster_gateway = gw
     app.include_router(gw.router)
 
@@ -384,20 +385,17 @@ def worker(
     - Sends periodic heartbeats
     - Serves inference requests on its local port
     """
-    import asyncio
-    import uvicorn
-    from hippo.cluster.worker import WorkerService, WorkerConfig
-    from hippo import api
-    from hippo.config import load_config
+    # Import fresh app factory and config
+    from hippo.config import HippoConfig as _HC
+    from hippo.model_manager import ModelManager as _MM
+    from hippo.api import create_app
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
-
-    cfg = load_config()
+    cfg = _HC()
     cfg.server.host = "0.0.0.0"
     cfg.server.port = port
+
+    mgr = _MM(cfg)
+    mgr.start_cleanup_thread()
 
     worker_config = WorkerConfig(
         gateway_host=gateway_url.split("//")[1].split(":")[0] if gateway_url and "//" in gateway_url else (gateway_url or None),
@@ -409,13 +407,15 @@ def worker(
 
     w = WorkerService(worker_config)
 
-    # Create a fresh app instance (not lazy default) to avoid __getattr__ issues
-    from hippo.config import HippoConfig as _HC
-    from hippo.model_manager import ModelManager as _MM
-    from hippo.api import create_app
+    app = create_app(config=cfg, manager=mgr)
+    app.state._cluster_worker = w  # lifespan will pick this up
 
-    app = create_app(config=cfg, manager=_MM(cfg))
-    app.state._cluster_worker = w
+    typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
+    typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")
+    if gateway_url:
+        typer.echo(f"   Gateway: {gateway_url}")
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
     typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
     typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")

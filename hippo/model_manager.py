@@ -395,9 +395,14 @@ class ModelManager:
                 logger.warning("Pre-warm failed for '%s': %s", name, e)
 
     def unload_all(self):
-        """Unload all models."""
+        """Unload all loaded models."""
         with self._lock:
-            names = list(self._loaded.keys())
-
-        for name in names:
-            self.unload(name)
+            for name, llama in list(self._loaded.items()):
+                try:
+                    del llama
+                except Exception:
+                    pass
+            self._loaded.clear()
+            self._last_used.clear()
+            self._access_count.clear()
+            logger.info("All models unloaded")

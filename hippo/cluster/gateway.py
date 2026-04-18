@@ -22,8 +22,8 @@ from hippo.cluster.transport import Transport
 
 logger = logging.getLogger("hippo.cluster.gateway")
 
-HEARTBEAT_TIMEOUT = 45  # seconds before marking worker unhealthy
-CLEANUP_INTERVAL = 30  # seconds between worker cleanup checks
+HEARTBEAT_TIMEOUT = 120  # seconds before marking worker unhealthy (generous for Wi-Fi)
+CLEANUP_INTERVAL = 60  # seconds between worker cleanup checks
 
 
 # --- API Models ---
@@ -135,13 +135,15 @@ class GatewayService:
             worker = self._scheduler.get_worker(assignment.worker_id)
             if worker and worker.status in ("healthy", "unhealthy"):
                 # Route even to "unhealthy" workers — they may just have a delayed heartbeat
-                url = f"http://{worker.host}:{worker.port}/v1/completions"
+                url = f"http://{worker.host}:{worker.port}/api/generate"
                 payload = {
                     "model": request.model,
                     "prompt": request.prompt,
-                    "max_tokens": request.max_tokens,
-                    "temperature": request.temperature,
-                    "stream": request.stream,
+                    "stream": False,
+                    "options": {
+                        "num_predict": request.max_tokens,
+                        "temperature": request.temperature,
+                    },
                 }
                 try:
                     return await self._transport.post(url, payload)

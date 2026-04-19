@@ -81,6 +81,7 @@ class GatewayService:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
         self._local_manager = None
+        self._rpc_backends: dict[str, "LLamaRPCBackend"] = {}  # model_name → backend (常驻)
 
         # FastAPI router for cluster endpoints
         self.router = APIRouter(prefix="/cluster", tags=["cluster"])
@@ -105,8 +106,17 @@ class GatewayService:
         logger.info("Gateway started")
 
     async def stop(self):
-        """Stop the gateway."""
+        """Stop the gateway and unload all RPC backends."""
         self._running = False
+
+        # Unload all resident RPC backends
+        for name, backend in self._rpc_backends.items():
+            try:
+                backend.unload()
+                logger.info(f"Unloaded RPC backend for {name}")
+            except Exception as e:
+                logger.warning(f"Error unloading RPC backend {name}: {e}")
+        self._rpc_backends.clear()
 
         if self._cleanup_task:
             self._cleanup_task.cancel()
@@ -127,14 +137,24 @@ class GatewayService:
     async def route_inference(self, request: InferenceRequest) -> dict:
         """Route an inference request to the appropriate worker.
 
-        Falls back to local inference if no worker has the model.
+        Strategy (in order):
+        1. RPC-distributed: split model across local + remote workers
+        2. Single worker: route to worker that has the model
+        3. Local fallback: use local ModelManager
         """
+        # Strategy 1: RPC-distributed inference (only for models >= 3GB)
+        # Small models are faster locally — no point splitting across network
+        MODEL_SIZE_THRESHOLD_GB = 3.0
+        dist = self._scheduler.compute_tensor_split(model_size_gb=MODEL_SIZE_THRESHOLD_GB)
+        if dist and self._local_manager:
+            return await self._rpc_distributed_inference(request, dist)
+
+        # Strategy 2: single worker routing
         assignment = self._scheduler.get_assignment(request.model)
 
         if assignment:
             worker = self._scheduler.get_worker(assignment.worker_id)
             if worker and worker.status in ("healthy", "unhealthy"):
-                # Route even to "unhealthy" workers — they may just have a delayed heartbeat
                 url = f"http://{worker.host}:{worker.port}/api/generate"
                 payload = {
                     "model": request.model,
@@ -151,13 +171,84 @@ class GatewayService:
                     logger.error(f"Worker {worker.worker_id} error: {e}")
                     worker.status = "unhealthy"
 
-        # Fallback: local inference
+        # Strategy 3: local fallback
         if self._local_manager:
             logger.info(f"Using local fallback for model {request.model}")
             # TODO(Phase 1): call local ModelManager for fallback inference
             return {"error": "local fallback not yet implemented"}
 
         raise HTTPException(status_code=503, detail=f"No worker available for model {request.model}")
+
+    async def _rpc_distributed_inference(self, request: InferenceRequest, dist: dict) -> dict:
+        """Run inference using LLamaRPCBackend (常驻 — model stays loaded).
+
+        Backend is cached per model_name, loaded once, reused across requests.
+        """
+        import asyncio
+        from hippo.cluster.backend import LLamaRPCBackend
+
+        rpc_workers = dist["rpc_workers"]
+        tensor_split = dist["tensor_split"]
+        model_name = request.model
+
+        # Reuse cached backend (常驻模式)
+        backend = self._rpc_backends.get(model_name)
+        if backend and backend.is_loaded:
+            logger.debug(f"RPC backend cache hit for {model_name}")
+        else:
+            # First time: create + load
+            logger.info(
+                f"RPC distributed inference: loading model={model_name}, "
+                f"workers={len(rpc_workers)}, split={tensor_split}"
+            )
+
+            if not self._local_manager:
+                raise HTTPException(status_code=503, detail="No local manager configured")
+
+            # Resolve model path via ModelManager's internal method
+            model_path = self._local_manager._resolve_model_path(model_name)
+            if not model_path:
+                raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
+            model_path = str(model_path)
+
+            backend = LLamaRPCBackend(
+                rpc_workers=rpc_workers,
+                tensor_split=tensor_split,
+                n_ctx=2048,
+            )
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, backend.load, model_path)
+
+            # Cache it (常驻)
+            self._rpc_backends[model_name] = backend
+            logger.info(f"RPC backend for {model_name} loaded and cached (常驻)")
+
+        # Generate using cached backend
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: backend.generate(
+                    request.prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                )
+            )
+
+            return {
+                "model": model_name,
+                "response": result["choices"][0]["text"],
+                "done": True,
+                "distributed": True,
+                "rpc_workers": len(rpc_workers),
+                "tensor_split": tensor_split,
+            }
+        except Exception as e:
+            logger.exception(f"RPC distributed inference failed for {model_name}")
+            # Remove broken backend from cache so next request retries
+            self._rpc_backends.pop(model_name, None)
+            raise HTTPException(status_code=500, detail=str(e))
 
     def get_cluster_status(self) -> dict:
         """Return cluster status."""

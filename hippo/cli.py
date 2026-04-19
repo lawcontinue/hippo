@@ -28,6 +28,8 @@ def serve(
     cert: str = typer.Option(None, "--cert", help="SSL certificate file path"),
     key: str = typer.Option(None, "--key", help="SSL private key file path"),
     audit_log: str = typer.Option(None, "--audit-log", help="Enable audit logging (JSONL file path)"),
+    distributed: bool = typer.Option(False, "--distributed", "-d", help="Enable distributed inference (RPC sharding)"),
+    rpc_workers: str = typer.Option("", "--rpc-workers", help="Comma-separated RPC worker endpoints (host:port)"),
 ):
     """Start the Hippo server."""
     import uvicorn
@@ -50,9 +52,35 @@ def serve(
 
     # Wire up via app.state instead of globals
     api.app.state.config = cfg
-    api.app.state.manager = ModelManager(cfg)
-    api.app.state.manager.start_cleanup_thread()
+    manager = ModelManager(cfg)
+    manager.start_cleanup_thread()
+    api.app.state.manager = manager
     api.app.state._audit_log_path = audit_log
+
+    # Distributed mode: set up cluster gateway + RPC backend
+    if distributed:
+        from hippo.cluster.gateway import GatewayService
+        gw = GatewayService(port=port)
+        gw.set_local_manager(manager)
+        api.app.state._cluster_gateway = gw
+        api.app.include_router(gw.router)
+
+        # If RPC workers specified, register them with the scheduler
+        if rpc_workers:
+            for i, ep in enumerate(rpc_workers.split(",")):
+                ep = ep.strip()
+                if ":" in ep:
+                    h, p = ep.rsplit(":", 1)
+                    gw._scheduler.register_worker(
+                        worker_id=f"rpc-worker-{i}",
+                        host=h,
+                        port=int(p),
+                        gpu_memory_gb=8.0,  # default estimate
+                        models=[],
+                    )
+            typer.echo(f"  📡 Registered {len(rpc_workers.split(','))} RPC worker(s)")
+
+        typer.echo(f"  🦛 Distributed mode ON (RPC sharding)")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -409,13 +437,6 @@ def worker(
 
     app = create_app(config=cfg, manager=mgr)
     app.state._cluster_worker = w  # lifespan will pick this up
-
-    typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
-    typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")
-    if gateway_url:
-        typer.echo(f"   Gateway: {gateway_url}")
-
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
     typer.echo(f"🦛 Hippo Worker starting on 0.0.0.0:{port}")
     typer.echo(f"   Memory: {memory}GB | Discovery: {'on' if not no_discovery else 'off'}")

@@ -148,6 +148,79 @@ class Scheduler:
             ],
         }
 
+    def compute_tensor_split(self, model_size_gb: float) -> Optional[dict]:
+        """Compute tensor_split for RPC-distributed inference.
+
+        Distributes model layers proportionally to each worker's free memory.
+        Local GPU is always included as the first device.
+
+        Args:
+            model_size_gb: Estimated model size in GB. Used to check if
+                          total cluster memory is sufficient.
+
+        Returns:
+            {
+                "rpc_workers": ["host:port", ...],
+                "tensor_split": [0.4, 0.3, 0.3],
+                "local_share": 0.4,
+            }
+            or None if no remote workers available or total memory insufficient.
+        """
+        healthy = [w for w in self._workers.values() if w.status == "healthy"]
+        if not healthy:
+            return None
+
+        # Calculate free memory per worker
+        remote_free = []
+        for w in healthy:
+            free = max(w.gpu_memory_gb - w.gpu_memory_used_gb, 0.5)
+            remote_free.append((w, free))
+
+        total_remote = sum(s for _, s in remote_free)
+        if total_remote < 0.5:
+            return None
+
+        # Local GPU: reserve 30% for system + KV context
+        local_available = 8.0  # assume 8GB free on local GPU (conservative)
+
+        # Check total capacity (local + remote)
+        total_available = local_available + total_remote
+        if total_available < model_size_gb:
+            logger.warning(
+                f"Insufficient cluster memory: need {model_size_gb:.1f}GB, "
+                f"have {total_available:.1f}GB (local {local_available:.1f} + remote {total_remote:.1f})"
+            )
+            return None
+
+        # Proportional split based on available memory
+        all_shares = [local_available] + [s for _, s in remote_free]
+        total = sum(all_shares)
+        tensor_split = [s / total for s in all_shares]
+
+        rpc_workers = [f"{w.host}:{w.port}" for w, _ in remote_free]
+
+        return {
+            "rpc_workers": rpc_workers,
+            "tensor_split": tensor_split,
+            "local_share": tensor_split[0],
+        }
+
+    def get_workers_info(self) -> list[dict]:
+        """Get worker info for distributed inference setup."""
+        return [
+            {
+                "worker_id": w.worker_id,
+                "host": w.host,
+                "port": w.port,
+                "gpu_memory_gb": w.gpu_memory_gb,
+                "gpu_memory_used_gb": w.gpu_memory_used_gb,
+                "gpu_free_gb": w.gpu_memory_gb - w.gpu_memory_used_gb,
+                "status": w.status,
+                "mlx": w.mlx,
+            }
+            for w in self._workers.values()
+        ]
+
     def _reschedule(self):
         """Re-schedule all model assignments across workers."""
         # For Phase 0: each model on one worker, no sharding
@@ -158,11 +231,10 @@ class Scheduler:
                 continue
             for model in w.models:
                 if model not in new_assignments:
-                    # Estimate model size (rough: 1B params ≈ 2GB in GGUF Q4)
                     new_assignments[model] = ModelAssignment(
                         model=model,
                         worker_id=w.worker_id,
-                        size_gb=0,  # unknown for now
+                        size_gb=0,
                     )
         self._assignments = new_assignments
         logger.info(f"Scheduled {len(new_assignments)} model assignments across {len(self._workers)} workers")

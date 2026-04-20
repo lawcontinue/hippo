@@ -2,12 +2,13 @@
 """LLM Memory Budget Calculator — check if a model fits before loading.
 
 Prevents OOM crashes by calculating memory requirements upfront.
-Based on real crash data from Hippo distributed inference testing.
+Supports: single, dual-rpc, multi-rpc, pipeline (MLX Pipeline Parallelism).
 
 Usage:
+    python3 memory_budget.py --model-size 15.5 --mode single
+    python3 memory_budget.py --model-size 15.5 --mode pipeline --world-size 2
     python3 memory_budget.py --model-size 15.5 --mode dual-rpc --tensor-split 0.5,0.5
-    python3 memory_budget.py --model-size 4.6 --mode single
-    python3 memory_budget.py --model-path ~/.hippo/models/model.gguf --mode dual-rpc --rpc-workers 2
+    python3 memory_budget.py --model-path model.gguf --mode pipeline --world-size 2 --json
 """
 
 import argparse
@@ -15,214 +16,179 @@ import os
 import sys
 import subprocess
 import json
-from pathlib import Path
 
 
 def get_available_memory_gb() -> float:
-    """Get available memory (free + inactive/reclaimable) in GB. macOS only."""
+    """Get available memory (free + inactive) in GB. macOS only."""
     try:
         result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
         lines = result.stdout.strip().split("\n")
         page_size = 16384  # macOS ARM64
-        free_pages = 0
-        inactive_pages = 0
+        free_pages = inactive_pages = 0
         for line in lines:
             if "Pages free" in line:
                 free_pages = int(line.split(":")[1].strip().rstrip("."))
             elif "Pages inactive" in line:
                 inactive_pages = int(line.split(":")[1].strip().rstrip("."))
-        available_bytes = (free_pages + inactive_pages) * page_size
-        return available_bytes / (1024 ** 3)
+        return (free_pages + inactive_pages) * page_size / (1024 ** 3)
     except Exception:
-        # Fallback: guess 13GB for 16GB Mac
-        return 13.0
+        return 4.0  # P1-3: conservative fallback (was 13.0)
 
 
 def get_total_memory_gb() -> float:
     """Get total physical memory in GB."""
     try:
         result = subprocess.run(["sysctl", "hw.memsize"], capture_output=True, text=True, timeout=5)
-        mem_bytes = int(result.stdout.split(":")[1].strip())
-        return mem_bytes / (1024 ** 3)
+        return int(result.stdout.split(":")[1].strip()) / (1024 ** 3)
     except Exception:
         return 16.0
 
 
-def estimate_kv_cache_gb(n_ctx: int, n_layers: int = 32, hidden_dim: int = 4096) -> float:
-    """Estimate KV cache memory for given context length.
-
-    KV cache ≈ 2 * n_layers * n_ctx * hidden_dim * 2 bytes (FP16)
-    """
-    kv_bytes = 2 * n_layers * n_ctx * hidden_dim * 2
-    return kv_bytes / (1024 ** 3)
+def estimate_kv_cache_gb(n_ctx: int = 2048, n_layers: int = 32, hidden_dim: int = 4096) -> float:
+    """KV cache ≈ 2 * n_layers * n_ctx * hidden_dim * 2 bytes (FP16)."""
+    return 2 * n_layers * n_ctx * hidden_dim * 2 / (1024 ** 3)
 
 
 def get_model_size_gb(model_path: str) -> float:
-    """Get GGUF model file size in GB."""
     if model_path and os.path.isfile(model_path):
         return os.path.getsize(model_path) / (1024 ** 3)
     return 0.0
 
 
-# Known model memory profiles (from real testing)
-MODEL_PROFILES = {
-    "deepseek-r1-8b-q4": {"size_gb": 4.6, "n_layers": 32, "hidden": 4096, "tested_single": True},
-    "qwen3.6-35b-a3b-q3km": {"size_gb": 15.5, "n_layers": 64, "hidden": 2048, "tested_single": False},
-    "qwen3.6-35b-a3b-q4km": {"size_gb": 20.6, "n_layers": 64, "hidden": 2048, "tested_single": False},
-}
-
-
-def calculate_budget(
-    model_size_gb: float,
-    mode: str = "single",
-    tensor_split: list[float] = None,
-    n_ctx: int = 2048,
-    n_layers: int = 32,
-    hidden_dim: int = 4096,
-    peak_factor: float = 1.2,
-) -> dict:
-    """Calculate memory budget for model loading.
-
-    Args:
-        model_size_gb: GGUF file size in GB
-        mode: 'single', 'dual-rpc', or 'multi-rpc'
-        tensor_split: list of ratios [local, remote1, ...]
-        n_ctx: context window size
-        n_layers: model layers
-        hidden_dim: hidden dimension
-        peak_factor: loading peak multiplier (1.2 = 20% headroom)
-
-    Returns:
-        dict with budget analysis
-    """
+def calculate_budget(model_size_gb, mode="single", tensor_split=None,
+                     world_size=2, n_ctx=2048, n_layers=32, hidden_dim=4096):
     available = get_available_memory_gb()
     total = get_total_memory_gb()
     kv_cache = estimate_kv_cache_gb(n_ctx, n_layers, hidden_dim)
+    system_overhead = 1.5  # GB
 
+    if mode == "pipeline":
+        # MLX Pipeline: only loads assigned layers, NO full mmap
+        per_device = model_size_gb / world_size
+        embedding_overhead = max(0.2, model_size_gb * 0.05)  # P1-2: scale with model size
+        peak = per_device * 1.3 + embedding_overhead + system_overhead
+        steady = per_device + kv_cache + system_overhead
+        feasible = peak < available
+        deficit = max(0, peak - available)
+        return {
+            "model_size_gb": round(model_size_gb, 1),
+            "mode": "pipeline",
+            "world_size": world_size,
+            "memory": {
+                "total_physical_gb": round(total, 1),
+                "available_gb": round(available, 1),
+                "per_device_model_gb": round(per_device, 1),
+                "loading_peak_gb": round(peak, 1),
+                "steady_state_gb": round(steady, 1),
+                "kv_cache_gb": round(kv_cache, 2),
+            },
+            "feasible": feasible,
+            "deficit_gb": round(deficit, 1),
+            "recommendation": _pipeline_recommendation(feasible, deficit, peak, available, world_size),
+        }
+
+    # --- llama.cpp modes (single / dual-rpc / multi-rpc) ---
     if mode == "single":
         local_ratio = 1.0
         n_workers = 0
-    elif mode == "dual-rpc":
+    else:
         if tensor_split is None:
             tensor_split = [0.5, 0.5]
         local_ratio = tensor_split[0]
         n_workers = len(tensor_split) - 1
-    else:  # multi-rpc
-        if tensor_split is None:
-            n_workers = 1
-            local_ratio = 0.5
-        else:
-            local_ratio = tensor_split[0]
-            n_workers = len(tensor_split) - 1
 
-    # Memory calculations
-    # Phase 1: mmap entire file (virtual memory)
-    mmap_peak = model_size_gb
-
-    # Phase 2: steady state after distribution
+    # CRITICAL: mmap peak = FULL file, regardless of tensor_split
+    # P1-1 fix: single mode also has 1.2x loading peak
+    real_peak = model_size_gb * 1.2 + kv_cache + system_overhead
     local_model = model_size_gb * local_ratio
-    steady_state = local_model + kv_cache + 1.5  # 1.5GB system overhead
-
-    # Phase 3: loading peak (worst case)
-    loading_peak = model_size_gb * peak_factor * local_ratio + kv_cache + 1.5
-
-    # Actually, the real peak is mmap of the FULL file (even with RPC)
-    # because llama-cpp mmaps the entire GGUF before splitting
-    real_peak = model_size_gb + kv_cache + 1.5
+    steady_state = local_model + kv_cache + system_overhead
 
     feasible = real_peak < available
     deficit = max(0, real_peak - available)
 
     return {
-        "model_size_gb": model_size_gb,
+        "model_size_gb": round(model_size_gb, 1),
         "mode": mode,
+        "tensor_split": tensor_split,
         "local_ratio": local_ratio,
         "n_rpc_workers": n_workers,
-        "tensor_split": tensor_split,
         "memory": {
             "total_physical_gb": round(total, 1),
             "available_gb": round(available, 1),
-            "mmap_peak_gb": round(mmap_peak, 1),
+            "mmap_peak_gb": round(model_size_gb, 1),
             "loading_peak_gb": round(real_peak, 1),
             "steady_state_gb": round(steady_state, 1),
             "kv_cache_gb": round(kv_cache, 2),
         },
         "feasible": feasible,
         "deficit_gb": round(deficit, 1),
-        "recommendation": _get_recommendation(feasible, deficit, mode, model_size_gb, available),
+        "recommendation": _rpc_recommendation(feasible, deficit, mode, model_size_gb, available),
     }
 
 
-def _get_recommendation(feasible: bool, deficit: float, mode: str, model_size: float, available: float) -> str:
+def _pipeline_recommendation(feasible, deficit, peak, available, world_size):
+    if feasible:
+        return f"✅ Pipeline OK. Per-device peak ~{peak:.1f}GB, available {available:.1f}GB."
+    return (f"❌ Pipeline NOT feasible. Need {deficit:.1f}GB more per device. "
+            f"Try: smaller quant, more devices (current: {world_size}), or stop other services.")
+
+
+def _rpc_recommendation(feasible, deficit, mode, model_size, available):
     if feasible:
         return f"✅ Model should load. Peak ~{model_size + 2:.1f}GB, available {available:.1f}GB."
-    if mode == "single" and deficit > 0:
-        return (
-            f"❌ Not enough memory for single-machine loading. "
-            f"Need {deficit:.1f}GB more. Try: dual-rpc with tensor_split=[0.3,0.7] "
-            f"or use a smaller quantization."
-        )
-    if mode in ("dual-rpc", "multi-rpc") and deficit > 0:
-        # Check if even mmap fits
-        if model_size > available:
-            return (
-                f"❌ GGUF mmap alone ({model_size:.1f}GB) exceeds available memory ({available:.1f}GB). "
-                f"Even RPC split won't help — the loading process mmaps the FULL file. "
-                f"Solutions: (1) Use smaller quant (IQ3_XXS instead of Q3_K_M), "
-                f"(2) Stop other services (Ollama, etc.) to free RAM, "
-                f"(3) Use llama-cli instead of llama-cpp-python (lower overhead)."
-            )
-        return (
-            f"⚠️ Tight budget. Peak {model_size + 2:.1f}GB vs {available:.1f}GB available. "
-            f"May work if other services are stopped first. "
-            f"Recommend: stop Ollama, use llama-cli, close other apps."
-        )
-    return "Unknown situation."
+    if model_size > available:
+        return (f"❌ GGUF mmap ({model_size:.1f}GB) exceeds available ({available:.1f}GB). "
+                f"Even RPC won't help — mmap loads FULL file. "
+                f"Solutions: (1) smaller quant, (2) stop services, (3) use MLX Pipeline mode.")
+    return (f"⚠️ Tight budget. Peak {model_size + 2:.1f}GB vs {available:.1f}GB. "
+            f"May work if other services stopped. Recommend: stop Ollama, close apps.")
 
 
-def print_report(budget: dict):
-    """Print human-readable budget report."""
+def print_report(budget):
     m = budget["memory"]
     print("=" * 60)
     print("LLM Memory Budget Report")
     print("=" * 60)
     print(f"  Model size:      {budget['model_size_gb']:.1f} GB")
     print(f"  Mode:            {budget['mode']}")
-    if budget["tensor_split"]:
-        print(f"  Tensor split:    {budget['tensor_split']}")
-        print(f"  Local ratio:     {budget['local_ratio']*100:.0f}%")
-        print(f"  RPC workers:     {budget['n_rpc_workers']}")
+    if budget["mode"] == "pipeline":
+        print(f"  World size:      {budget['world_size']}")
+        print(f"  Per device:      {m['per_device_model_gb']:.1f} GB")
+    else:
+        if budget.get("tensor_split"):
+            print(f"  Tensor split:    {budget['tensor_split']}")
+            print(f"  Local ratio:     {budget.get('local_ratio', 1) * 100:.0f}%")
     print()
-    print("Memory Budget:")
+    print("Memory:")
     print(f"  Physical RAM:    {m['total_physical_gb']:.1f} GB")
-    print(f"  Available:       {m['available_gb']:.1f} GB (free + reclaimable)")
-    print(f"  KV cache:        {m['kv_cache_gb']:.2f} GB")
-    print(f"  Mmap peak:       {m['mmap_peak_gb']:.1f} GB ⚠️ (full file mapped)")
+    print(f"  Available:       {m['available_gb']:.1f} GB")
     print(f"  Loading peak:    {m['loading_peak_gb']:.1f} GB")
     print(f"  Steady state:    {m['steady_state_gb']:.1f} GB")
+    print(f"  KV cache:        {m['kv_cache_gb']:.2f} GB")
+    if budget["mode"] != "pipeline":
+        print(f"  Mmap peak:       {m['mmap_peak_gb']:.1f} GB ⚠️ (full file)")
     print()
     if budget["feasible"]:
-        print(f"  ✅ FEASIBLE — Peak fits in available memory")
+        print("  ✅ FEASIBLE")
     else:
         print(f"  ❌ NOT FEASIBLE — Deficit: {budget['deficit_gb']:.1f} GB")
-    print()
-    print(f"  {budget['recommendation']}")
+    print(f"\n  {budget['recommendation']}")
     print("=" * 60)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LLM Memory Budget Calculator")
-    parser.add_argument("--model-size", type=float, help="GGUF model size in GB")
-    parser.add_argument("--model-path", type=str, help="Path to GGUF file (auto-detect size)")
-    parser.add_argument("--mode", choices=["single", "dual-rpc", "multi-rpc"], default="single")
-    parser.add_argument("--tensor-split", type=str, help="Comma-separated ratios, e.g. 0.5,0.5")
-    parser.add_argument("--n-ctx", type=int, default=2048, help="Context window size")
-    parser.add_argument("--n-layers", type=int, default=32, help="Model layers")
-    parser.add_argument("--hidden-dim", type=int, default=4096, help="Hidden dimension")
-    parser.add_argument("--json", action="store_true", help="Output JSON")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="LLM Memory Budget Calculator")
+    p.add_argument("--model-size", type=float, help="Model size in GB")
+    p.add_argument("--model-path", type=str, help="Path to model file (auto-detect size)")
+    p.add_argument("--mode", choices=["single", "dual-rpc", "multi-rpc", "pipeline"], default="single")
+    p.add_argument("--tensor-split", type=str, help="Comma-separated ratios, e.g. 0.5,0.5")
+    p.add_argument("--world-size", type=int, default=2, help="Devices for pipeline mode")
+    p.add_argument("--n-ctx", type=int, default=2048)
+    p.add_argument("--n-layers", type=int, default=32)
+    p.add_argument("--hidden-dim", type=int, default=4096)
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args()
 
-    # Get model size
     model_size = args.model_size or 0
     if args.model_path:
         model_size = get_model_size_gb(args.model_path)
@@ -230,27 +196,18 @@ def main():
         print("Error: provide --model-size or --model-path", file=sys.stderr)
         sys.exit(1)
 
-    # Parse tensor split
-    tensor_split = None
-    if args.tensor_split:
-        tensor_split = [float(x) for x in args.tensor_split.split(",")]
+    tensor_split = [float(x) for x in args.tensor_split.split(",")] if args.tensor_split else None
 
-    # Calculate
     budget = calculate_budget(
-        model_size_gb=model_size,
-        mode=args.mode,
-        tensor_split=tensor_split,
-        n_ctx=args.n_ctx,
-        n_layers=args.n_layers,
-        hidden_dim=args.hidden_dim,
+        model_size_gb=model_size, mode=args.mode, tensor_split=tensor_split,
+        world_size=args.world_size, n_ctx=args.n_ctx,
+        n_layers=args.n_layers, hidden_dim=args.hidden_dim,
     )
 
     if args.json:
         print(json.dumps(budget, indent=2))
     else:
         print_report(budget)
-
-    # Exit code: 0 = feasible, 1 = not feasible
     sys.exit(0 if budget["feasible"] else 1)
 
 

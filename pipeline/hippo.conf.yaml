@@ -1,0 +1,64 @@
+# Hippo Pipeline Configuration
+# Models and modes supported on dual Mac Mini M4 16GB
+
+defaults:
+  mode: standalone          # standalone | pipeline | dflash
+  host: "0.0.0.0"
+  port: 9998
+  rank0_host: "192.168.1.10"
+  thunderbolt_host: "169.254.149.29"
+
+models:
+  qwen3-4b:
+    repo: "Qwen/Qwen3-4B"
+    precision: "bf16"
+    size_gb: 7.8
+    modes: [standalone, dflash]
+    dflash:
+      draft_repo: "Aryagm/dflash-draft-qwen3-4b"
+      draft_size_gb: 1.0
+      expected_tok_s: 42
+    standalone:
+      expected_tok_s: 12
+
+  gemma-3-12b:
+    repo: "google/gemma-3-12b-pt"
+    precision: "qat-4bit"
+    size_gb: 6.9
+    modes: [standalone, pipeline]
+    pipeline:
+      shards: 2
+      r0_layers: [0, 24]    # layers 0-24 on R0
+      r1_layers: [25, 47]   # layers 25-47 on R1
+      expected_tok_s: 7.0
+    standalone:
+      expected_tok_s: 3.5
+
+  qwen3-8b:
+    repo: "Qwen/Qwen3-8B"
+    precision: "bf16"
+    size_gb: 15.5
+    modes: [pipeline]
+    pipeline:
+      shards: 2
+      r0_layers: [0, 24]
+      r1_layers: [25, 47]
+      expected_tok_s: 5.0
+
+hardware:
+  r0:
+    chip: "Apple M4"
+    ram_gb: 16
+    wifi_ip: "192.168.1.10"
+    thunderbolt_ip: "169.254.149.29"
+  r1:
+    chip: "Apple M4"
+    ram_gb: 16
+    wifi_ip: "192.168.1.11"
+    thunderbolt_ip: "169.254.149.30"
+
+# Memory guard: refuse to load if estimated usage > ram_gb * safety_factor
+memory:
+  safety_factor: 0.85
+  system_reserve_gb: 4.0
+  mlx_overhead_gb: 2.0

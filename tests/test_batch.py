@@ -1,9 +1,10 @@
 """Tests for batch inference endpoints."""
 import pytest
 from fastapi.testclient import TestClient
+
+from hippo import api
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
-from hippo import api
 
 
 @pytest.fixture

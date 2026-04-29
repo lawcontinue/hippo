@@ -1,10 +1,12 @@
 """Tests for API endpoints."""
-import pytest
 import secrets
+
+import pytest
 from fastapi.testclient import TestClient
+
+from hippo import api
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
-from hippo import api
 
 
 @pytest.fixture

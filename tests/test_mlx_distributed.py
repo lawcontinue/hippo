@@ -12,8 +12,7 @@ hostfile.txt 内容:
 """
 
 import os
-import sys
-import time
+
 import mlx.core as mx
 
 
@@ -42,10 +41,10 @@ def test_distributed():
             data = mx.array([42.0, 43.0, 44.0])
             print(f"[Rank 0] Sending: {data}")
             mx.distributed.send(data, dst=1, group=group)
-            print(f"[Rank 0] ✅ Sent!")
+            print("[Rank 0] ✅ Sent!")
         else:
             buf = mx.zeros((3,))
-            print(f"[Rank 1] Waiting to receive...")
+            print("[Rank 1] Waiting to receive...")
             mx.distributed.recv(buf, src=0, group=group)
             print(f"[Rank 1] ✅ Received: {buf}")
 

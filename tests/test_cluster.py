@@ -1,9 +1,10 @@
 """Tests for Hippo cluster module — Phase 0 validation."""
 
 import pytest
-from hippo.cluster.discovery import DiscoveryService, NodeInfo
+
+from hippo.cluster.discovery import DiscoveryService
 from hippo.cluster.scheduler import Scheduler
-from hippo.cluster.worker import WorkerService, WorkerConfig
+from hippo.cluster.worker import WorkerConfig, WorkerService
 
 
 class TestScheduler:

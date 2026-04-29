@@ -12,10 +12,10 @@ Usage:
 """
 
 import argparse
-import os
-import sys
-import subprocess
 import json
+import os
+import subprocess
+import sys
 
 
 def get_available_memory_gb() -> float:

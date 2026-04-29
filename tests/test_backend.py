@@ -1,8 +1,6 @@
 """Tests for LLamaRPCBackend and distributed inference."""
 
 import pytest
-import os
-from unittest.mock import MagicMock, patch
 
 # We test the logic without actually loading models
 
@@ -41,7 +39,7 @@ class TestLocalBackend:
     """Test LocalBackend protocol compliance."""
 
     def test_implements_protocol(self):
-        from hippo.cluster.backend import LocalBackend, InferenceBackend
+        from hippo.cluster.backend import InferenceBackend, LocalBackend
         backend = LocalBackend()
         assert isinstance(backend, InferenceBackend)
 

@@ -1,6 +1,7 @@
 """Tests for model_manager module."""
 import threading
 from unittest.mock import MagicMock
+
 from hippo.config import HippoConfig
 from hippo.model_manager import ModelManager
 

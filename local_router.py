@@ -14,11 +14,12 @@
 - 48GB VRAM：可同时加载，32K ctx
 """
 
-import ollama
-import time
-import re
 import logging
+import re
+import time
 from typing import Optional, Tuple
+
+import ollama
 
 # ── 输入长度限制 ──────────────────────────────────────────
 MAX_PROMPT_CHARS = 8000  # ~2K tokens，防止 OOM

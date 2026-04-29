@@ -4,11 +4,10 @@ import time
 from unittest.mock import MagicMock
 
 from hippo.query_predictor import (
-    QueryPredictor,
     CachedPrediction,
+    QueryPredictor,
     _classify_intent,
 )
-
 
 # ── Intent classification ──────────────────────────────────────────────
 

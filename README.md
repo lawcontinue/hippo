@@ -1,302 +1,201 @@
 # Hippo
 
-Lightweight local LLM manager — Ollama's Python alternative.
+Distributed LLM inference on Apple Silicon. Pipeline parallelism across dual Mac Minis, speculative decoding for single-machine speedup, and an OpenAI-compatible API.
 
 [![CI](https://github.com/lawcontinue/hippo/workflows/CI/badge.svg)](https://github.com/lawcontinue/hippo/actions)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Features](#features) · [Quick Start](#quick-start) · [API](#api-endpoints) · [Configuration](#configuration) · [Contributing](CONTRIBUTING.md)
-
----
-
-## Why Hippo?
-
-I built Hippo because Ollama's Go codebase was hard to debug and extend. I wanted something I could actually read and modify in production.
-
-**Three things Hippo does differently:**
-
-1. **Auto-unload** - Models free memory after N seconds idle (default 300s). No more manual unloading or OOM kills.
-2. **Pure Python** - Fully auditable. If something breaks, you can actually read the code and fix it.
-3. **Ollama-compatible** - Drop-in API replacement. Just change the base URL.
-
-**Built-in Audit Logging** — Every API call is logged with timestamp, model, latency, and status. SOC 2 / ISO 27001 audit trail support out of the box. Ollama can't do this.
-
-**Trade-offs:** Hippo is slower than Ollama (Python overhead), and doesn't support all features yet (no multi-GPU, no LoRA). If you need production-grade performance, stick with Ollama. If you need hackability and auditability, Hippo might work better.
+**Quick Start** · [Performance](#performance) · [Modes](#modes) · [API](#openai-compatible-api) · [Configuration](#configuration) · [Architecture](#architecture)
 
 ---
 
-## Features
+## Performance
 
-- **Ollama-Compatible API**: Drop-in replacement (mostly)
-- **Auto-Unload**: Models free memory after idle timeout
-- **Pure Python**: Auditable, debuggable, modifyable
-- **Audit Logging**: JSONL audit trail designed to support SOC 2 / ISO 27001 compliance reviews
-- **HTTPS Support**: Self-signed certificates and Let's Encrypt
-- **TUI Dashboard**: Real-time monitoring with Rich
-- **Model Quantization**: 14 GGUF formats supported
-- **Docker & CI**: Production deployment ready
+Real numbers from dual Mac Mini M4 (16 GB each). No benchmarks cherry-picked.
 
----
+| Model | Mode | Hardware | tok/s | Notes |
+|-------|------|----------|-------|-------|
+| Qwen3-4B | DFlash | Single machine | **47.8** | 4× single-machine speedup |
+| Gemma-3-12B | Pipeline (Thunderbolt) | 2 machines | **8.3** | 2.4× faster than single-machine |
+| Gemma-3-12B | Pipeline (Wi-Fi) | 2 machines | **7.0** | Works without Thunderbolt |
+| Qwen3-4B | Standalone | Single machine | 12.0 | Baseline |
+| Gemma-3-12B | Standalone | Single machine | 3.5 | Baseline |
+
+## Modes
+
+Hippo supports three inference modes, pick based on model size:
+
+- **Standalone** — Single machine, vanilla MLX inference. For models that fit in RAM.
+- **DFlash** — Single machine, speculative decoding via [DFlash](https://arxiv.org/abs/2602.06036). ~4× faster than standalone. For models under ~8B.
+- **Pipeline** — Two machines, model split across Thunderbolt or Wi-Fi. For models too large for one machine (8-15B on 16 GB machines).
+
+**Rule of thumb**: Small model → DFlash. Big model → Pipeline. Don't stack them (ADR-163: 16 GB can't hold shard + target + draft simultaneously).
 
 ## Quick Start
 
-### Installation
+### Prerequisites
+
+- Apple Silicon Mac (M1+)
+- Python 3.11+
+- [MLX](https://github.com/ml-explore/mlx) (`pip install mlx`)
+
+### Pipeline mode (two machines)
+
+**R1** (start first):
 
 ```bash
-# From PyPI (TODO - not published yet)
-pip install hippo-llm
-
-# From source
-git clone https://github.com/deepsearch/hippo.git
-cd hippo
-pip install -e .
+cd hippo/pipeline
+./start.sh r1
 ```
 
-### Basic Usage
+**R0** (start second):
 
 ```bash
-# Start the server
-hippo serve
+cd hippo/pipeline
+./start.sh r0 --model gemma-3-12b --prompt "Explain quantum computing"
+```
 
-# Pull a model (from HuggingFace GGUF)
-hippo pull bartowski/Llama-3.2-3B-Instruct-GGUF
+### DFlash mode (single machine)
 
+```bash
+./start.sh dflash --model qwen3-4b --prompt "Write a Python web server"
+```
+
+### Benchmark
+
+```bash
+./benchmark.sh 3 50 thunderbolt    # 3 runs, 50 tokens, Thunderbolt
+./benchmark.sh 3 50 wifi           # 3 runs, 50 tokens, Wi-Fi
+```
+
+## OpenAI-Compatible API
+
+Start the API server:
+
+```bash
+python hippo_api.py --config hippo.conf.yaml
+```
+
+Three endpoints, drop-in replacement for OpenAI SDK:
+
+```bash
 # List models
-hippo list
+curl http://localhost:8002/v1/models
 
-# Run inference
-hippo run llama-3.2-3b "What is the meaning of life?"
+# Chat completion (streaming)
+curl http://localhost:8002/v1/chat/completions \
+  -H "Authorization: Bearer your-token" \
+  -d '{"model":"gemma-3-12b","messages":[{"role":"user","content":"Hello"}]}'
 
-# TUI dashboard (2s refresh)
-hippo tui
+# Health check
+curl http://localhost:8002/health
 ```
 
-### API Usage
+Works with **Cursor**, **Open WebUI**, **Continue**, and any OpenAI SDK client — just change `base_url`.
+
+### Web UI
 
 ```bash
-# Chat API
-curl http://localhost:11434/api/chat -d '{
-  "model": "llama-3.2-3b",
-  "messages": [{"role": "user", "content": "Hello!"}],
-  "stream": false
-}'
-
-# Generate API
-curl http://localhost:11434/api/generate -d '{
-  "model": "llama-3.2-3b",
-  "prompt": "Once upon a time..."
-}'
+python hippo_web.py --config hippo.conf.yaml
 ```
 
----
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/tags` | GET | List models |
-| `/api/generate` | POST | Text completion |
-| `/api/chat` | POST | Chat completion |
-| `/api/pull` | POST | Download model (auth required) |
-| `/api/delete` | DELETE | Remove model (auth required) |
-| `/api/version` | GET | Version info |
-
-**Streaming:** All endpoints support Server-Sent Events (set `stream: true`).
-
----
-
-## Audit Logging
-
-Enable compliance-ready audit logging with a single flag:
-
-```bash
-# Enable audit logging
-hippo serve --audit-log ~/.hippo/audit.jsonl
-
-# Every API call is logged:
-# {"ts":"2026-04-13T23:16:42.123Z","method":"POST","path":"/api/chat",
-#  "model":"llama-3.2-3b","status":200,"latency_ms":1234.5,
-#  "prompt_tokens":42,"completion_tokens":128,"client_ip":"127.0.0.1",
-#  "api_key_hash":"sha256:4a3b2c1d..."}
-```
-
-**Why this matters:**
-
-| Need | Ollama | Hippo |
-|------|--------|-------|
-| **Audit trail** | ❌ No logging | ✅ JSONL per-request |
-| **SOC 2 audit trail** | ❌ No logging | ✅ Full request history |
-| **Data privacy proof** | ❌ Black box | ✅ Auditable code + logs |
-| **Access tracking** | ❌ None | ✅ Client IP + API key hash |
-| **Error forensics** | ❌ Logs only | ✅ Structured error tracking |
-
-**Security features:**
-- API keys are **truncated SHA-256 (128-bit)** hashed in logs (never stored in plain text)
-- Client IPs are logged for access auditing
-- Automatic log rotation when file exceeds 100 MB
-- Thread-safe writes for concurrent requests
-
-**Use cases:**
-- **Enterprise compliance** — Audit trail designed for SOC 2, ISO 27001, GDPR compliance reviews
-- **Security monitoring** — Detect unusual API usage patterns
-- **Performance analysis** — Identify slow queries and bottlenecks
-- **Cost tracking** — Count tokens per model per user
-
-> **Note:** Audit logging provides the foundation for compliance. Production environments may need additional measures (log signing, centralized collection, tamper-evident storage).
-
----
+Gradio chat interface at `http://localhost:7860`.
 
 ## Configuration
 
-Create `~/.hippo/config.yaml`:
+`hippo.conf.yaml` drives everything:
 
 ```yaml
-server:
-  host: "127.0.0.1"
-  port: 11434
+defaults:
+  mode: standalone       # standalone | pipeline | dflash
+  host: "0.0.0.0"
+  port: 9998
 
 models:
-  dir: "~/.hippo/models"
+  qwen3-4b:
+    repo: "Qwen/Qwen3-4B"
+    precision: "bf16"
+    size_gb: 7.8
+    modes: [standalone, dflash]
+    dflash:
+      draft_repo: "Aryagm/dflash-draft-qwen3-4b"
 
-idle_timeout: 300  # seconds
-
-defaults:
-  n_ctx: 4096
-  n_gpu_layers: -1
-  temperature: 0.7
-  max_tokens: 2048
-
-api_key: "your-secret-key"  # Optional: for pull/delete operations
+  gemma-3-12b:
+    repo: "google/gemma-3-12b-pt"
+    precision: "qat-4bit"
+    size_gb: 6.9
+    modes: [standalone, pipeline]
+    pipeline:
+      shards: 2
+      r0_layers: [0, 24]
+      r1_layers: [25, 47]
 ```
 
----
-
-## TUI Dashboard
-
-```bash
-hippo tui --refresh 2.0
-```
-
-Shows:
-- Model list (status, size, family, quantization)
-- 2-second auto-refresh
-- Server health check
-- Color-coded output
-
----
-
-## Model Quantization
-
-Convert between 14 GGUF formats:
-
-```bash
-# List formats
-hippo quantize --list
-
-# Convert
-hippo quantize input.gguf output.gguf --format q4_k_m
-```
-
-**Supported:** Q2_K, Q3_K_S, Q3_K_M, Q3_K_L, Q4_K_S, Q4_K_M, Q5_K_S, Q5_K_M, Q6_K, Q8_0, F16, F32
-
-**Note:** Requires `llama-quantize` CLI tool (llama.cpp). Falls back to `llama-cpp-python` if missing.
-
----
-
-## Docker
-
-```bash
-# Docker Compose (recommended)
-docker-compose up
-
-# Manual build
-docker build -t hippo:latest .
-docker run -p 11434:8000 -v ~/.hippo/models:/models hippo:latest
-```
-
----
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/ -v
-
-# Coverage
-pytest --cov=hippo tests/
-
-# Lint
-ruff check hippo/
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
----
+Memory guard built in — refuses to load if estimated usage exceeds `RAM × safety_factor`.
 
 ## Architecture
 
 ```
-hippo/
-├── api.py              # FastAPI app, REST endpoints
-├── model_manager.py    # Model lifecycle (load/unload/LRU)
-├── downloader.py       # HuggingFace download
-├── cli.py              # Typer CLI
-├── tui.py              # Rich TUI dashboard
-├── quantize.py         # Model conversion
-└── config.py           # YAML config loader
+R0 (Mac Mini 1)                    R1 (Mac Mini 2)
+┌─────────────────┐                ┌─────────────────┐
+│  Layers 0-23    │  hidden state  │  Layers 24-47   │
+│  (prefill +     │ ──────────────>│  (forward +     │
+│   decode loop)  │  Thunderbolt/  │   lm_head)      │
+│                 │<─────────────── │                 │
+│  sample token   │   top-k logits │                 │
+└─────────────────┘                └─────────────────┘
 ```
 
-**Design choices:**
-- FastAPI for async performance
-- llama.cpp for inference (via llama-cpp-python)
-- Rich for TUI (better than curses)
-- Typer for CLI (better than argparse)
+### Why SD doesn't help Pipeline
 
----
+Counter-intuitive but实测verified: speculative decoding (including DFlash) does **not** accelerate pipeline inference. The bottleneck is R0's forward pass (~100ms/step). SD saves time on sampling, but verification also requires R0 forward — so SD doesn't reduce forward passes. Net result: slower than baseline (4.3 tok/s vs 6.8 tok/s).
+
+> Pipeline solves the **memory** problem. SD solves the **speed** problem. They're orthogonal.
+
+### Memory budget (16 GB machines)
+
+| Model | Mode | Per-machine | Margin | Verdict |
+|-------|------|-------------|--------|---------|
+| Gemma-3-12B | Pipeline | 3.5 GB | +4.1 GB | ✅ Comfortable |
+| Qwen3-4B | DFlash | 8.8 GB | -1.2 GB | ❌ Needs 48 GB |
+| Qwen3-4B | Standalone | 7.8 GB | -0.2 GB | ⚠️ Tight |
+| Qwen3-8B | Pipeline | 7.8 GB | -0.2 GB | ⚠️ Tight |
+
+## Project structure
+
+```
+hippo/
+├── hippo_api.py          # OpenAI-compatible API server
+├── hippo_web.py          # Gradio chat UI
+├── hippo_cli.py          # Unified CLI (serve/benchmark/list-models)
+├── hippo.conf.yaml       # Configuration (models × modes)
+├── start.sh              # One-command launcher
+├── pipeline/             # Core inference engine
+│   ├── rank0.py          # R0: autoregressive generation
+│   ├── rank1.py          # R1: persistent server
+│   ├── model_ops.py      # MLX ops (RoPE, quantized linear)
+│   ├── tcp_transport.py  # Thunderbolt/Wi-Fi transport
+│   └── benchmark.sh      # Multi-run benchmark tool
+├── api.py                # Legacy Ollama-compatible API
+├── model_manager.py      # Legacy model lifecycle
+└── tests/                # Test suite
+```
 
 ## Roadmap
 
-### v0.2.0
-- Multi-GPU support
-- LoRA adapter support
-- Batch inference
-- Prometheus metrics
+- [ ] Continuous batching
+- [ ] Model hot-swap via API
+- [ ] Qwen3-8B pipeline optimization
+- [ ] Benchmark dashboard (Prometheus + Grafana)
 
-### v0.3.0
-- Distributed serving
-- Model sharding
-- Web UI
+## Contributing
 
----
-
-## Known Issues
-
-- Windows compatibility needs testing
-- Multi-GPU not yet supported
-- Model quantization requires external `llama-quantize` tool
-
----
-
-## Acknowledgments
-
-- [Ollama](https://github.com/ollama/ollama) - API specification
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) - Inference engine
-- [FastAPI](https://fastapi.tiangolo.com/) - Web framework
-
----
+PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
----
+## Credits
 
-## Community
-
-- GitHub: https://github.com/deepsearch/hippo
-- Issues: https://github.com/deepsearch/hippo/issues
-- Discussions: https://github.com/deepsearch/hippo/discussions
+Built by [lawcontinue](https://github.com/lawcontinue) with help from the T-Mind agent family. Powered by [MLX](https://github.com/ml-explore/mlx).

@@ -1,2 +1,11 @@
 lint.select = ["F", "I"]
 lint.ignore = ["F821"]
+
+exclude = [
+    "pipeline/_archived/",
+    "test_*.py",
+    "hippo/tui_backup.py",
+    "hippo/tui_v2.py",
+    "tui_backup.py",
+    "tui_v2.py",
+]

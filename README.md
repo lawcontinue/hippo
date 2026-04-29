@@ -11,7 +11,7 @@ Distributed LLM inference on Apple Silicon. Pipeline parallelism across dual Mac
 
 ## Performance
 
-Real numbers from dual Mac Mini M4 (16 GB each). No benchmarks cherry-picked.
+Measured on dual Mac Mini M4 (16 GB each).
 
 | Model | Mode | Hardware | tok/s | Notes |
 |-------|------|----------|-------|-------|
@@ -76,7 +76,7 @@ Start the API server:
 python hippo_api.py --config hippo.conf.yaml
 ```
 
-Three endpoints, drop-in replacement for OpenAI SDK:
+Three endpoints, same shapes as OpenAI:
 
 ```bash
 # List models
@@ -91,7 +91,7 @@ curl http://localhost:8002/v1/chat/completions \
 curl http://localhost:8002/health
 ```
 
-Works with **Cursor**, **Open WebUI**, **Continue**, and any OpenAI SDK client — just change `base_url`.
+Works with Cursor, Open WebUI, Continue — change `base_url` and it just works.
 
 ### Web UI
 
@@ -131,7 +131,7 @@ models:
       r1_layers: [25, 47]
 ```
 
-Memory guard built in — refuses to load if estimated usage exceeds `RAM × safety_factor`.
+Memory guard built in — refuses to load if it won't fit (`RAM × safety_factor`).
 
 ## Architecture
 
@@ -148,7 +148,7 @@ R0 (Mac Mini 1)                    R1 (Mac Mini 2)
 
 ### Why SD doesn't help Pipeline
 
-Counter-intuitive but实测verified: speculative decoding (including DFlash) does **not** accelerate pipeline inference. The bottleneck is R0's forward pass (~100ms/step). SD saves time on sampling, but verification also requires R0 forward — so SD doesn't reduce forward passes. Net result: slower than baseline (4.3 tok/s vs 6.8 tok/s).
+Counter-intuitive but实测 verified: speculative decoding (including DFlash) does **not** accelerate pipeline inference. The bottleneck is R0's forward pass (~100ms/step). SD saves time on sampling, but verification also requires R0 forward — so SD doesn't reduce forward passes. Net result: slower than baseline (4.3 tok/s vs 6.8 tok/s).
 
 > Pipeline solves the **memory** problem. SD solves the **speed** problem. They're orthogonal.
 

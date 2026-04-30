@@ -1,6 +1,6 @@
 # Hippo
 
-Distributed LLM inference on Apple Silicon. Pipeline parallelism across dual Mac Minis, speculative decoding for single-machine speedup, and an OpenAI-compatible API.
+Distributed LLM inference on Apple Silicon. Pipeline parallelism across dual Mac Minis, speculative decoding for single-machine speedup, and an OpenAI-compatible API. Built for governed, auditable AI deployments.
 
 [![CI](https://github.com/lawcontinue/hippo/workflows/CI/badge.svg)](https://github.com/lawcontinue/hippo/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -187,6 +187,7 @@ hippo/
 - [ ] Model hot-swap via API
 - [ ] Qwen3-8B pipeline optimization
 - [ ] Benchmark dashboard (Prometheus + Grafana)
+- [ ] Audit logging for compliance reporting
 
 ## Contributing
 
@@ -198,4 +199,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Credits
 
-Built by [lawcontinue](https://github.com/lawcontinue) with help from the T-Mind agent family. Powered by [MLX](https://github.com/ml-explore/mlx).
+Built by [lawcontinue](https://github.com/lawcontinue) with help from the T-Mind agent family. Powered by [MLX](https://github.com/ml-explore/mlx). Part of the [Agora governance](https://github.com/lawcontinue/agora-core) ecosystem — auditable, governed inference.

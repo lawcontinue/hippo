@@ -1,1 +1,1 @@
-# empty
+__import__('hippo')

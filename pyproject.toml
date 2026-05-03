@@ -2,33 +2,58 @@
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["hippo*"]
-exclude = ["pipeline*", "tests*", "skills*", "scripts*"]
-
 [project]
 name = "hippo-llm"
-version = "0.1.0"
-description = "Hippo 🦛 — Lightweight local LLM manager"
+version = "0.2.0"
+description = "Distributed LLM inference on Apple Silicon — Pipeline Parallelism + Speculative Decoding + OpenAI-compatible API"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+authors = [
+    {name = "lawcontinue", email = "411947628@qq.com"},
+]
+keywords = ["mlx", "llm", "inference", "distributed", "pipeline-parallelism", "speculative-decoding", "apple-silicon"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-    "llama-cpp-python>=0.2.70",
     "pyyaml>=6.0",
-    "typer>=0.9",
     "requests>=2.31",
-    "rich>=13.0",
-    "prometheus-client>=0.20.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+web = [
+    "gradio>=4.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "httpx>=0.24",
     "ruff>=0.1.0",
 ]
+all = ["hippo-llm[api,web]"]
 
-[project.scripts]
-hippo = "hippo.cli:app"
+[project.urls]
+Homepage = "https://github.com/lawcontinue/hippo"
+Repository = "https://github.com/lawcontinue/hippo"
+Issues = "https://github.com/lawcontinue/hippo/issues"
+
+[tool.setuptools.packages.find]
+include = ["pipeline*"]
+exclude = ["_archived*", "tests*", "scripts*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

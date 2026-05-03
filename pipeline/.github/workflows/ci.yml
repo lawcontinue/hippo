@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Check syntax
+        run: |
+          python -m py_compile config.py
+          python -m py_compile model_ops.py
+          python -m py_compile logits.py
+          python -m py_compile rank0.py
+          python -m py_compile rank1.py
+          python -m py_compile sharded_inference.py
+          python -m py_compile shard.py
+          python -m py_compile shard_loader.py
+          python -m py_compile tcp_transport.py
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for hardcoded IPs
+        run: |
+          ! grep -rn '192\.168\.\|169\.254\.\|10\.0\.0\.' config.py model_ops.py logits.py rank0.py rank1.py sharded_inference.py shard.py shard_loader.py tcp_transport.py
+      - name: Check for secrets
+        run: |
+          if grep -rnil 'password\|api_key\|secret_key' --include='*.py' . 2>/dev/null; then
+            echo "❌ Potential secrets found!"
+            exit 1
+          fi
+
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install MLX
+        run: pip install mlx numpy
+      - name: Run import tests
+        run: |
+          python -c "
+          import config
+          from config import build_parser, HIDDEN_SIZE, VOCAB_SIZE
+          from model_ops import rms_norm, forward_layer
+          from logits import compress_logits_topk, sample_token
+          from rank0 import rank0_generate
+          from rank1 import rank1_serve
+          assert HIDDEN_SIZE == 3840
+          assert VOCAB_SIZE == 262208
+          print('✅ All imports and constants OK')
+          "
+      - name: Run unit tests
+        run: |
+          cd tests && python test_phase2.py

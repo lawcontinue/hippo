@@ -1,6 +1,0 @@
-fastapi>=0.110
-uvicorn>=0.29
-llama-cpp-python>=0.2.70
-pyyaml>=6.0
-typer>=0.9
-requests>=2.31

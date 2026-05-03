@@ -10,3 +10,8 @@ test_metrics_manual.py
 *.pyc
 __pycache__/
 __pycache__/
+
+
+# Archived v0.1 and experiments (kept as knowledge reserve)
+# _archived/ is tracked in git but not installed
+_archived/

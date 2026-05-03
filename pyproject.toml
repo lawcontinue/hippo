@@ -29,6 +29,9 @@ dependencies = [
     "numpy>=1.24",
 ]
 
+# Note: Pipeline and DFlash modes require mlx and mlx-lm (macOS only).
+# Install with: pip install mlx mlx-lm
+
 [project.optional-dependencies]
 api = [
     "fastapi>=0.110",

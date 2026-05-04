@@ -1,202 +1,89 @@
-# Hippo
+# Hippo 🦛
 
-Distributed LLM inference on Apple Silicon. Pipeline parallelism across dual Mac Minis, speculative decoding for single-machine speedup, and an OpenAI-compatible API. Built for governed, auditable AI deployments.
+`pip install hippo-llm` | Python 3.9+ | MIT
 
-[![CI](https://github.com/lawcontinue/hippo/workflows/CI/badge.svg)](https://github.com/lawcontinue/hippo/actions)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+Run 30B models on a ¥3800 GPU at 78 tok/s. Then chain machines together when you need to go bigger.
 
-**Quick Start** · [Performance](#performance) · [Modes](#modes) · [API](#openai-compatible-api) · [Configuration](#configuration) · [Architecture](#architecture)
-
----
-
-## Performance
-
-Measured on dual Mac Mini M4 (16 GB each).
-
-| Model | Mode | Hardware | tok/s | Notes |
-|-------|------|----------|-------|-------|
-| Qwen3-4B | DFlash | Single machine | **47.8** | 4× single-machine speedup |
-| Gemma-3-12B | Pipeline (Thunderbolt) | 2 machines | **8.3** | 2.4× faster than single-machine |
-| Gemma-3-12B | Pipeline (Wi-Fi) | 2 machines | **7.0** | Works without Thunderbolt |
-| Qwen3-4B | Standalone | Single machine | 12.0 | Baseline |
-| Gemma-3-12B | Standalone | Single machine | 3.5 | Baseline |
-
-## Modes
-
-Hippo supports three inference modes, pick based on model size:
-
-- **Standalone** — Single machine, vanilla MLX inference. For models that fit in RAM.
-- **DFlash** — Single machine, speculative decoding via [DFlash](https://arxiv.org/abs/2602.06036). ~4× faster than standalone. For models under ~8B.
-- **Pipeline** — Two machines, model split across Thunderbolt or Wi-Fi. For models too large for one machine (8-15B on 16 GB machines).
-
-**Rule of thumb**: Small model → DFlash. Big model → Pipeline. Don't stack them (ADR-163: 16 GB can't hold shard + target + draft simultaneously).
-
-## Quick Start
-
-### Prerequisites
-
-- Apple Silicon Mac (M1+)
-- Python 3.11+
-- [MLX](https://github.com/ml-explore/mlx) (`pip install mlx`)
-
-### Pipeline mode (two machines)
-
-**R1** (start first):
+## 30-second setup
 
 ```bash
-cd hippo/pipeline
-./start.sh r1
+hippo-pipeline serve --model qwen3-30b-a3b-q3 --mode standalone
+# → OpenAI-compatible API at localhost:8000/v1/chat/completions
 ```
 
-**R0** (start second):
+```python
+import openai
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="none")
+r = client.chat.completions.create(
+    model="qwen3-30b-a3b-q3",
+    messages=[{"role": "user", "content": "Explain pipeline parallelism"}],
+    max_tokens=500
+)
+print(r.choices[0].message.content)
+```
+
+<details>
+<summary>Two-machine setup</summary>
 
 ```bash
-cd hippo/pipeline
-./start.sh r0 --model gemma-3-12b --prompt "Explain quantum computing"
+# Machine 1
+hippo-pipeline serve --model gemma-3-12b --mode pipeline --rank 0
+
+# Machine 2
+hippo-pipeline serve --model gemma-3-12b --mode pipeline --rank 1 \
+  --coordinator http://192.168.1.10:9000
 ```
 
-### DFlash mode (single machine)
+Split the model across machines. Run what doesn't fit on one GPU.
 
-```bash
-./start.sh dflash --model qwen3-4b --prompt "Write a Python web server"
-```
+</details>
 
-### Benchmark
+## The loop detection problem
 
-```bash
-./benchmark.sh 3 50 thunderbolt    # 3 runs, 50 tokens, Thunderbolt
-./benchmark.sh 3 50 wifi           # 3 runs, 50 tokens, Wi-Fi
-```
+Q3-quantized MoE models have a known issue: the routing network gets imprecise at 3-bit, picks the same experts over and over, and the output turns into repeating garbage. We measured this at **78% loop rate** on Qwen3-30B-A3B Q3_K_M.
 
-## OpenAI-Compatible API
+Nobody was catching this because repeat penalties work on tokens, not semantics. The model says the same *thing* in different words, and token-level samplers let it through.
 
-Start the API server:
+Hippo's loop detector runs Jaccard similarity on a sliding window of output lines — catches meaning-level repetition, not just token matches.
 
-```bash
-python hippo_api.py --config hippo.conf.yaml
-```
+**Result on the same GPU, same model:**
 
-Three endpoints, same shapes as OpenAI:
+| | With detection | Without |
+|---|---|---|
+| Effective speed | **78 tok/s** | ~7 tok/s usable (rest is junk) |
+| Loop rate | **0%** | 78% |
 
-```bash
-# List models
-curl http://localhost:8002/v1/models
+Three actions when a loop is detected: `escape` (inject a redirect), `stop` (terminate), `warn` (log). Zero false positives across 30+ test runs.
 
-# Chat completion (streaming)
-curl http://localhost:8002/v1/chat/completions \
-  -H "Authorization: Bearer your-token" \
-  -d '{"model":"gemma-3-12b","messages":[{"role":"user","content":"Hello"}]}'
+## Benchmarks
 
-# Health check
-curl http://localhost:8002/health
-```
+RTX 5060 Ti 16GB, llama.cpp backend:
 
-Works with Cursor, Open WebUI, Continue — change `base_url` and it just works.
+| Model | Quant | VRAM | tok/s |
+|-------|-------|------|-------|
+| Gemma4-E4B | Q4_K_M | 9.6GB | 90 |
+| Qwen3-30B-A3B | Q3_K_M | 14GB | 78 |
+| Qwen3-8B | Q4_K_M | 5.2GB | 71 |
+| Qwen3-14B | Q4_K_M | 9.3GB | 41 |
 
-### Web UI
+Cloud equivalent (~$2/hr for 30B): a 5060 Ti breaks even at ~1,900 hours.
 
-```bash
-python hippo_web.py --config hippo.conf.yaml
-```
+## What else it does
 
-Gradio chat interface at `http://localhost:7860`.
+- **Pipeline parallelism** — split any HF model across N machines (Mac + PC mixed)
+- **DFlash** — speculative decoding for Apple Silicon
+- **Auto memory budget** — calculates shard splits from available VRAM
+- **OpenAI-compatible API** — point existing tools at localhost
 
-## Configuration
+## When to use what
 
-`hippo.conf.yaml` drives everything:
-
-```yaml
-defaults:
-  mode: standalone       # standalone | pipeline | dflash
-  host: "0.0.0.0"
-  port: 9998
-
-models:
-  qwen3-4b:
-    repo: "Qwen/Qwen3-4B"
-    precision: "bf16"
-    size_gb: 7.8
-    modes: [standalone, dflash]
-    dflash:
-      draft_repo: "Aryagm/dflash-draft-qwen3-4b"
-
-  gemma-3-12b:
-    repo: "google/gemma-3-12b-pt"
-    precision: "qat-4bit"
-    size_gb: 6.9
-    modes: [standalone, pipeline]
-    pipeline:
-      shards: 2
-      r0_layers: [0, 24]
-      r1_layers: [25, 47]
-```
-
-Memory guard built in — refuses to load if it won't fit (`RAM × safety_factor`).
-
-## Architecture
-
-```
-R0 (Mac Mini 1)                    R1 (Mac Mini 2)
-┌─────────────────┐                ┌─────────────────┐
-│  Layers 0-23    │  hidden state  │  Layers 24-47   │
-│  (prefill +     │ ──────────────>│  (forward +     │
-│   decode loop)  │  Thunderbolt/  │   lm_head)      │
-│                 │<─────────────── │                 │
-│  sample token   │   top-k logits │                 │
-└─────────────────┘                └─────────────────┘
-```
-
-### Why SD doesn't help Pipeline
-
-Counter-intuitive but实测 verified: speculative decoding (including DFlash) does **not** accelerate pipeline inference. The bottleneck is R0's forward pass (~100ms/step). SD saves time on sampling, but verification also requires R0 forward — so SD doesn't reduce forward passes. Net result: slower than baseline (4.3 tok/s vs 6.8 tok/s).
-
-> Pipeline solves the **memory** problem. SD solves the **speed** problem. They're orthogonal.
-
-### Memory budget (16 GB machines)
-
-| Model | Mode | Per-machine | Margin | Verdict |
-|-------|------|-------------|--------|---------|
-| Gemma-3-12B | Pipeline | 3.5 GB | +4.1 GB | ✅ Comfortable |
-| Qwen3-4B | DFlash | 8.8 GB | -1.2 GB | ❌ Needs 48 GB |
-| Qwen3-4B | Standalone | 7.8 GB | -0.2 GB | ⚠️ Tight |
-| Qwen3-8B | Pipeline | 7.8 GB | -0.2 GB | ⚠️ Tight |
-
-## Project structure
-
-```
-hippo/
-├── hippo_api.py          # OpenAI-compatible API server
-├── hippo_web.py          # Gradio chat UI
-├── hippo_cli.py          # Unified CLI (serve/benchmark/list-models)
-├── hippo.conf.yaml       # Configuration (models × modes)
-├── start.sh              # One-command launcher
-├── pipeline/             # Core inference engine
-│   ├── rank0.py          # R0: autoregressive generation
-│   ├── rank1.py          # R1: persistent server
-│   ├── model_ops.py      # MLX ops (RoPE, quantized linear)
-│   ├── tcp_transport.py  # Thunderbolt/Wi-Fi transport
-│   └── benchmark.sh      # Multi-run benchmark tool
-├── api.py                # Legacy Ollama-compatible API
-├── model_manager.py      # Legacy model lifecycle
-└── tests/                # Test suite
-```
-
-## Roadmap
-
-- [ ] Continuous batching
-- [ ] Model hot-swap via API
-- [ ] Qwen3-8B pipeline optimization
-- [ ] Benchmark dashboard (Prometheus + Grafana)
-- [ ] Audit logging for compliance reporting
-
-## Contributing
-
-PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+| Situation | Mode |
+|-----------|------|
+| Model fits on one GPU | standalone |
+| Model doesn't fit | pipeline (2+ machines) |
+| Mac, want raw speed | dflash |
+| You're fine with cloud APIs | this isn't for you |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-## Credits
-
-Built by [lawcontinue](https://github.com/lawcontinue) with help from the T-Mind agent family. Powered by [MLX](https://github.com/ml-explore/mlx). Part of the [Agora governance](https://github.com/lawcontinue/agora-core) ecosystem — auditable, governed inference.
+MIT

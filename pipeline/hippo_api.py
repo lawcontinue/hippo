@@ -34,6 +34,12 @@ except ImportError:
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Optional llama-cpp-python backend
+try:
+    from backend_llama import LlamaBackend
+except ImportError:
+    LlamaBackend = None
+
 # ─── Config ─────────────────────────────────────────────
 
 DEFAULT_API_CONFIG = {
@@ -204,6 +210,10 @@ def create_backend(cfg: dict) -> HippoBackend:
         return DFlashBackend(cfg)
     elif mode == "pipeline":
         return PipelineBackend(cfg)
+    elif mode == "llama":
+        if LlamaBackend is None:
+            raise ImportError("llama-cpp-python not installed. Run: pip install llama-cpp-python")
+        return LlamaBackend(cfg)
     else:
         return StandaloneBackend(cfg)
 
@@ -383,8 +393,16 @@ def main():
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--model", default=None)
-    parser.add_argument("--mode", default=None, choices=["standalone", "pipeline", "dflash"])
+    parser.add_argument("--mode", default=None, choices=["standalone", "pipeline", "dflash", "llama"])
     parser.add_argument("--api-key", default=None, help="Set API key (or comma-separated for multiple)")
+    parser.add_argument("--gguf-path", default=None, help="Path to GGUF model file (for llama mode)")
+    parser.add_argument("--n-gpu-layers", type=int, default=-1, help="GPU layers for llama backend (default: -1 = all)")
+    parser.add_argument("--thinking", action="store_true", default=False, help="Enable Qwen3 thinking mode")
+    parser.add_argument("--loop-detect", action="store_true", default=False, help="Enable thinking loop detection")
+    parser.add_argument("--loop-detect-window", type=int, default=20, help="Loop detection window size")
+    parser.add_argument("--loop-detect-threshold", type=int, default=3, help="Loop detection threshold")
+    parser.add_argument("--loop-detect-action", default="escape", choices=["escape", "stop", "warn"],
+                        help="Loop detection action")
     args = parser.parse_args()
 
     cfg = load_api_config(args.config)
@@ -400,18 +418,29 @@ def main():
         cfg["mode"] = args.mode
     if args.api_key:
         cfg["api_keys"] = [k.strip() for k in args.api_key.split(",")]
+    if args.gguf_path:
+        cfg["gguf_path"] = args.gguf_path
+    if args.n_gpu_layers is not None:
+        cfg["n_gpu_layers"] = args.n_gpu_layers
+    cfg["thinking"] = args.thinking
+    cfg["loop_detect"] = args.loop_detect
+    cfg["loop_detect_window"] = args.loop_detect_window
+    cfg["loop_detect_threshold"] = args.loop_detect_threshold
+    cfg["loop_detect_action"] = args.loop_detect_action
 
     host = cfg.get("host", "0.0.0.0")
     port = cfg.get("port", 8080)
     mode = cfg.get("mode", "standalone")
     model = cfg.get("model", "qwen3-4b")
     auth_status = "enabled" if cfg.get("api_keys") else "disabled"
+    loop_status = f"enabled (action={cfg.get('loop_detect_action', 'escape')})" if cfg.get("loop_detect") else "disabled"
 
     print("🦛 Hippo API Server")
     print(f"   Host: {host}:{port}")
     print(f"   Model: {model}")
     print(f"   Mode: {mode}")
     print(f"   Auth: {auth_status}")
+    print(f"   Loop detect: {loop_status}")
     print("   Endpoints:")
     print("     POST /v1/chat/completions")
     print("     GET  /v1/models")

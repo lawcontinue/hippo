@@ -20,6 +20,7 @@ When deploying Hippo API in production:
 
 - [ ] Set `api_keys` in config to restrict access
 - [ ] Bind to `127.0.0.1` (not `0.0.0.0`) unless behind a reverse proxy
+- [ ] Configure CORS headers if accessing from browsers (or disable with `--no-cors`)
 - [ ] Enable `loop_detect` to prevent degenerate outputs
 - [ ] Set `max_tokens` limits to prevent resource exhaustion
 - [ ] Run behind a reverse proxy (nginx/caddy) for TLS termination

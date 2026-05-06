@@ -84,6 +84,19 @@ Cloud equivalent (~$2/hr for 30B): a 5060 Ti breaks even at ~1,900 hours.
 | Mac, want raw speed | dflash |
 | You're fine with cloud APIs | this isn't for you |
 
+## Safety positioning
+
+Hippo's loop detector and output controls are **L1 safety measures** — they constrain behavior, not intent. This means:
+
+- ✅ We can detect and stop repetitive/degenerate outputs
+- ✅ We can escape loops and retry with different parameters
+- ❌ We cannot guarantee the model "understands" your safety requirements
+- ❌ We cannot prevent a sufficiently capable model from generating harmful content if prompted
+
+This is an honest limitation. Hippo makes local inference *usable* (catching the 78% loop rate that makes Q3 MoE models practically useless). It does not make models *safe* in any philosophical sense.
+
+If you need production-grade content safety, layer a content filter **on top of** Hippo.
+
 ## License
 
 MIT

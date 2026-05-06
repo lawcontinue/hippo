@@ -1,77 +1,32 @@
 # Security Policy
 
-## Supported Versions
-
-| Version | Supported |
-|---------|-----------|
-| 0.1.x   | ✅        |
-
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please **do not open a public issue**.
+If you discover a security vulnerability in Hippo, please report it responsibly:
 
-Instead, send an email to: **[INSERT SECURITY EMAIL]**
+- **Email**: Open a GitHub Issue with the tag `security` (we'll convert to a private advisory if needed)
+- **Response time**: We aim to acknowledge within 48 hours and provide a fix within 7 days
 
-Please include:
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if known)
+## Known Limitations
 
-### What to Expect
+Hippo provides **L1 safety measures** (behavioral constraints like loop detection). It does **not** provide:
+- Content safety filtering (use a separate content filter on top)
+- Authentication beyond basic API keys
+- Protection against adversarial prompts (jailbreaks)
 
-- We will acknowledge receipt within 48 hours
-- We will provide a detailed response within 7 days
-- We will schedule a fix and release a security patch
-- Credit will be given in the release notes
+## API Security Checklist
 
-## Security Best Practices
+When deploying Hippo API in production:
 
-### For Users
+- [ ] Set `api_keys` in config to restrict access
+- [ ] Bind to `127.0.0.1` (not `0.0.0.0`) unless behind a reverse proxy
+- [ ] Enable `loop_detect` to prevent degenerate outputs
+- [ ] Set `max_tokens` limits to prevent resource exhaustion
+- [ ] Run behind a reverse proxy (nginx/caddy) for TLS termination
 
-1. **API Keys**: Never share your API keys publicly
-2. **Network**: Bind to `127.0.0.1` only (not `0.0.0.0`) when running locally
-3. **Updates**: Keep Hippo updated to the latest version
-4. **Models**: Only download models from trusted sources (HuggingFace)
+## Versions
 
-### For Developers
-
-1. **Input Validation**: All user inputs must be validated
-2. **Dependencies**: Regularly update dependencies for security patches
-3. **Secrets**: Never commit secrets or API keys to the repository
-4. **Code Review**: All code must be reviewed before merging
-
-### Known Security Considerations
-
-1. **Model Loading**: Hippo loads GGUF models from `~/.hippo/models/`
-   - Users should only download models from trusted sources
-   - Malicious models could execute arbitrary code
-
-2. **Network Exposure**: By default, Hippo binds to `127.0.0.1:11434`
-   - Do not change to `0.0.0.0` unless behind a firewall
-   - Use a reverse proxy (nginx) for production deployments
-
-3. **Authentication**: Hippo does not include built-in authentication
-   - Use API keys for `/api/pull` and `/api/delete` endpoints
-   - Deploy behind a reverse proxy with auth for production
-
-## Security Audits
-
-- **First Audit**: Planned for v0.2.0 release
-- **Frequency**: Before every major version
-
-## Dependencies
-
-Hippo depends on:
-- `fastapi` - Web framework
-- `llama-cpp-python` - LLM inference
-- `pyyaml` - Configuration
-- `requests` - HTTP client
-- `typer` - CLI framework
-- `rich` - TUI rendering
-
-Security alerts for these dependencies are monitored via GitHub Dependabot.
-
----
-
-**Thank you for helping keep Hippo secure!** 🦛
+| Version | Supported |
+| ------- | --------- |
+| 0.2.x   | ✅ |
+| < 0.2   | ❌ |

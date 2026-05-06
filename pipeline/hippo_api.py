@@ -40,6 +40,27 @@ try:
 except ImportError:
     LlamaBackend = None
 
+# ─── Rate Limiter ───────────────────────────────────────
+
+class RateLimiter:
+    """Simple in-memory rate limiter per client IP."""
+
+    def __init__(self, max_requests: int = 30, window_s: int = 60):
+        self.max_requests = max_requests
+        self.window_s = window_s
+        self._clients: dict[str, list[float]] = {}
+
+    def allow(self, client_id: str) -> bool:
+        now = time.time()
+        hits = self._clients.setdefault(client_id, [])
+        # Remove expired entries
+        self._clients[client_id] = [t for t in hits if now - t < self.window_s]
+        self._clients[client_id].append(now)
+        return len(self._clients[client_id]) <= self.max_requests
+
+
+_rate_limiter = RateLimiter()
+
 # ─── Config ─────────────────────────────────────────────
 
 DEFAULT_API_CONFIG = {
@@ -279,6 +300,16 @@ async def handle_chat(request: web.Request) -> web.Response:
     if not messages:
         return web.json_response({"error": "messages is required"}, status=400)
 
+    # Input sanitization: limit total content length
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    if total_chars > 50000:
+        return web.json_response({"error": f"input too long ({total_chars} chars, max 50000)"}, status=400)
+
+    # Rate limiting
+    client_ip = request.remote or "unknown"
+    if not _rate_limiter.allow(client_ip):
+        return web.json_response({"error": "rate limit exceeded"}, status=429)
+
     max_tokens = body.get("max_tokens", cfg.get("max_tokens", 256))
     temperature = body.get("temperature", 0.0)
     stream = body.get("stream", False)
@@ -316,6 +347,8 @@ async def handle_chat(request: web.Request) -> web.Response:
             "ar": round(result["ar"], 3) if result["ar"] else None,
             "time_s": round(result["time_s"], 2),
             "mode": cfg.get("mode"),
+            "loop_detected": result.get("loop_detected", False),
+            "safety_level": "L1",  # L1 = behavioral constraints only, not value alignment
         },
     }
     return web.json_response(response)

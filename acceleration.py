@@ -19,12 +19,11 @@ acceleration.py — Hippo 统一加速抽象层（AccelerationStrategy）
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

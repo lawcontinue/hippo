@@ -1,21 +1,10 @@
-__pycache__/
-*/__pycache__/
-__pycache__/
-*.pyc
-*.pyo
-BATCH_SUMMARY.txt
-test_metrics_manual.py
-*_COMPLETION_REPORT.md
-*_REPORT.md
-*.pyc
-__pycache__/
-__pycache__/
-
-
-# Archived v0.1 and experiments (kept as knowledge reserve)
-# _archived/ is tracked in git but not installed
-_archived/
 dist/
 *.egg-info/
 bench_outputs/
 __pycache__/
+.venv/
+_archived/
+*.pyc
+.pytest_cache/
+build/
+*.so

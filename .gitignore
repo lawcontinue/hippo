@@ -15,3 +15,7 @@ __pycache__/
 # Archived v0.1 and experiments (kept as knowledge reserve)
 # _archived/ is tracked in git but not installed
 _archived/
+dist/
+*.egg-info/
+bench_outputs/
+__pycache__/

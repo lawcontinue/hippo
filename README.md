@@ -68,10 +68,42 @@ RTX 5060 Ti 16GB, llama.cpp backend:
 
 Cloud equivalent (~$2/hr for 30B): a 5060 Ti breaks even at ~1,900 hours.
 
+## Embedding & Search
+
+Embedding and vector search, backed by SQLite. Works with any Ollama embedding model.
+
+```python
+from hippo.embedding import EmbeddingEngine, VectorStore
+
+# Create a store (auto-creates DB)
+store = VectorStore("my_docs.db")
+
+# Add documents with metadata
+store.add("Python is a programming language", {"topic": "tech"})
+store.add("Cats are loyal animals", {"topic": "animals"})
+
+# Search by semantic similarity
+results = store.search("programming in python", top_k=3)
+
+# Filter by metadata
+results = store.search("animals", filter={"topic": "animals"})
+```
+
+Runs locally, zero external dependencies beyond Ollama and numpy. In-memory cosine search on thousands of entries completes in <1 ms.
+
+| Feature | Detail |
+|---------|--------|
+| Storage | SQLite + BLOB (persistent, portable) |
+| Search | Cosine similarity via dot product (L2-normalized) |
+| Batch | `add_batch()` with rate-limited embedding |
+| Filter | Arbitrary metadata key/value filtering |
+| Cache | 512-entry LRU cache on embeddings |
+
 ## What else it does
 
 - **Pipeline parallelism** — split any HF model across N machines (Mac + PC mixed)
 - **DFlash** — speculative decoding for Apple Silicon
+- **Embedding & search** — vector store backed by SQLite, semantic search in <1 ms
 - **Auto memory budget** — calculates shard splits from available VRAM
 - **OpenAI-compatible API** — point existing tools at localhost
 

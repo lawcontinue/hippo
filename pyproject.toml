@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hippo-llm"
-version = "0.2.1"
-description = "Lightweight local LLM toolkit — inference, acceleration, embedding & search. Ollama's Python alternative."
+version = "0.3.0"
+description = "Local LLM inference + embedding & search in one package. Run 30B on consumer hardware, RAG without ChromaDB."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    {name = "lawcontinue", email = "411947628@qq.com"},
+    {name = "lawcontinue", email = "lawcontinue@users.noreply.github.com"},
 ]
-keywords = ["mlx", "llm", "inference", "distributed", "pipeline-parallelism", "speculative-decoding", "apple-silicon", "embedding", "vector-search", "ollama"]
+keywords = ["mlx", "llm", "inference", "distributed", "pipeline-parallelism", "speculative-decoding", "apple-silicon", "embedding", "vector-search", "rag", "bm25", "ollama"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

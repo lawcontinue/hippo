@@ -1,8 +1,8 @@
 # Hippo 🦛
 
-`pip install hippo-llm` | Python 3.9+ | MIT
+`pip install hippo-llm` | Python 3.10+ | MIT
 
-Run 30B models on a ¥3800 GPU at 78 tok/s. Then chain machines together when you need to go bigger.
+Run 30B models on a ¥3800 GPU at 78 tok/s. Then search through your documents without installing ChromaDB.
 
 ## 30-second setup
 
@@ -38,97 +38,118 @@ Split the model across machines. Run what doesn't fit on one GPU.
 
 </details>
 
-## The loop detection problem
+## One install for inference + search
 
-Q3-quantized MoE models have a known issue: the routing network gets imprecise at 3-bit, picks the same experts over and over, and the output turns into repeating garbage. We measured this at **78% loop rate** on Qwen3-30B-A3B Q3_K_M.
-
-Nobody was catching this because repeat penalties work on tokens, not semantics. The model says the same *thing* in different words, and token-level samplers let it through.
-
-Hippo's loop detector runs Jaccard similarity on a sliding window of output lines — catches meaning-level repetition, not just token matches.
-
-**Result on the same GPU, same model:**
-
-| | With detection | Without |
-|---|---|---|
-| Effective speed | **78 tok/s** | ~7 tok/s usable (rest is junk) |
-| Loop rate | **0%** | 78% |
-
-Three actions when a loop is detected: `escape` (inject a redirect), `stop` (terminate), `warn` (log). Zero false positives across 30+ test runs.
-
-## Benchmarks
-
-RTX 5060 Ti 16GB, llama.cpp backend:
-
-| Model | Quant | VRAM | tok/s |
-|-------|-------|------|-------|
-| Gemma4-E4B | Q4_K_M | 9.6GB | 90 |
-| Qwen3-30B-A3B | Q3_K_M | 14GB | 78 |
-| Qwen3-8B | Q4_K_M | 5.2GB | 71 |
-| Qwen3-14B | Q4_K_M | 9.3GB | 41 |
-
-Cloud equivalent (~$2/hr for 30B): a 5060 Ti breaks even at ~1,900 hours.
-
-## Embedding & Search
-
-Embedding and vector search, backed by SQLite. Works with any Ollama embedding model.
+Most RAG setups need two services: Ollama for inference + ChromaDB for vectors. Hippo gives you both in one `pip install`.
 
 ```python
 from hippo.embedding import EmbeddingEngine, VectorStore
 
-# Create a store (auto-creates DB)
-store = VectorStore("my_docs.db")
+engine = EmbeddingEngine(model="nomic-embed-text")  # uses local Ollama
+store = VectorStore("docs.db", mode="hybrid")  # BM25 + dense RRF fusion
 
-# Add documents with metadata
-store.add("Python is a programming language", {"topic": "tech"})
-store.add("Cats are loyal animals", {"topic": "animals"})
+# Add documents
+store.add_batch([
+    {"text": "Pipeline parallelism splits layers across devices", "metadata": {"source": "readme"}},
+    {"text": "BM25 handles exact keyword matches", "metadata": {"source": "docs"}},
+    {"text": "Speculative decoding improves latency by 2-3x", "metadata": {"source": "benchmarks"}},
+], engine=engine)
 
-# Search by semantic similarity
-results = store.search("programming in python", top_k=3)
-
-# Filter by metadata
-results = store.search("animals", filter={"topic": "animals"})
+# Hybrid search (BM25 + semantic, RRF fused)
+results = store.search("how to run big models on small GPUs", engine=engine, top_k=5)
+for doc in results:
+    print(f"[{doc.score:.3f}] {doc.text}")
 ```
 
-Runs locally, zero external dependencies beyond Ollama and numpy. In-memory cosine search on thousands of entries completes in <1 ms.
+No external vector DB. SQLite for persistence, numpy for similarity. Works offline.
 
-| Feature | Detail |
-|---------|--------|
-| Storage | SQLite + BLOB (persistent, portable) |
-| Search | Cosine similarity via dot product (L2-normalized) |
-| Batch | `add_batch()` with rate-limited embedding |
-| Filter | Arbitrary metadata key/value filtering |
-| Cache | 512-entry LRU cache on embeddings |
+<details>
+<summary>Full RAG example with local LLM</summary>
 
-## What else it does
+```python
+from hippo.embedding import EmbeddingEngine, VectorStore
+import openai
 
-- **Pipeline parallelism** — split any HF model across N machines (Mac + PC mixed)
-- **DFlash** — speculative decoding for Apple Silicon
-- **Embedding & search** — vector store backed by SQLite, semantic search in <1 ms
-- **Auto memory budget** — calculates shard splits from available VRAM
-- **OpenAI-compatible API** — point existing tools at localhost
+# 1. Index your documents (one-time)
+engine = EmbeddingEngine(model="nomic-embed-text")
+store = VectorStore("knowledge.db", mode="hybrid")
 
-## When to use what
+documents = [
+    "Hippo splits model layers across multiple devices using TCP.",
+    "Each device only loads its shard of layers, reducing memory per device.",
+    "The loop detector catches semantic repetition using Jaccard similarity.",
+    "BM25 hybrid search combines keyword matching with semantic similarity.",
+]
+store.add_batch([{"text": d} for d in documents], engine=engine)
 
-| Situation | Mode |
-|-----------|------|
-| Model fits on one GPU | standalone |
-| Model doesn't fit | pipeline (2+ machines) |
-| Mac, want raw speed | dflash |
-| You're fine with cloud APIs | this isn't for you |
+# 2. RAG query
+query = "how does hippo handle memory?"
+results = store.search(query, engine=engine, top_k=2)
+context = "\n".join(doc.text for doc in results)
 
-## Safety positioning
+# 3. Generate answer with local LLM
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="none")
+response = client.chat.completions.create(
+    model="qwen3-30b-a3b-q3",
+    messages=[
+        {"role": "system", "content": f"Answer based on this context:\n{context}"},
+        {"role": "user", "content": query}
+    ]
+)
+print(response.choices[0].message.content)
+```
 
-Hippo's loop detector and output controls are **L1 safety measures** — they constrain behavior, not intent. This means:
+</details>
 
-- ✅ We can detect and stop repetitive/degenerate outputs
-- ✅ We can escape loops and retry with different parameters
-- ❌ We cannot guarantee the model "understands" your safety requirements
-- ❌ We cannot prevent a sufficiently capable model from generating harmful content if prompted
+## What's inside
 
-This is an honest limitation. Hippo makes local inference *usable* (catching the 78% loop rate that makes Q3 MoE models practically useless). It does not make models *safe* in any philosophical sense.
+| Feature | Details |
+|---------|---------|
+| **Pipeline Parallelism** | Split any HF model across N machines. Mac + PC mixed. Plain TCP, no MPI. |
+| **Loop Detection** | Jaccard-similarity detector catches semantic repetition that `repeat_penalty` misses. |
+| **Embedding & Search** | Dense + BM25 + hybrid RRF fusion. SQLite-backed, sub-ms queries. |
+| **Chinese-optimized BM25** | Built-in Chinese tokenizer with stop words. No jieba needed. |
+| **ANN Index** | Approximate nearest neighbor for large collections (>10K docs). |
+| **OpenAI-Compatible API** | Drop-in `/v1/chat/completions`. Works with LangChain, LlamaIndex, anything. |
+| **Auto Memory Budget** | Calculates shard splits from available VRAM automatically. |
 
-If you need production-grade content safety, layer a content filter **on top of** Hippo.
+## When to use Hippo
+
+| You want... | Use this |
+|-------------|----------|
+| Local inference on one machine | `--mode standalone` with any GGUF model |
+| Run a model too big for one device | `--mode pipeline` across 2+ machines |
+| RAG without installing ChromaDB | `VectorStore(mode="hybrid")` |
+| Search Chinese documents | BM25 with built-in tokenizer |
+
+## Install
+
+```bash
+pip install hippo-llm
+```
+
+Requirements: Python 3.10+, [Ollama](https://ollama.ai) running locally for model weights and embeddings.
+
+## Roadmap
+
+- **v0.3**: ANN index for >10K document collections ✅
+- **v0.4**: Multi-shard support (>2 devices), automatic layer balancing
+- **v0.5**: Speculative decoding across shards
+- **v0.6**: Built-in model download + GGUF auto-conversion
+
+## Benchmarks
+
+| Setup | Model | Speed |
+|-------|-------|-------|
+| Mac Mini M2 (16GB) | Qwen3-4B-Q4 | 41 tok/s |
+| RTX 5060 Ti (16GB) | Qwen3-14B-Q4 | 41 tok/s |
+| 2× Mac Mini (16GB each) | Qwen3-30B-A3B-Q3 | 78 tok/s |
+| Mac Mini M2 (16GB) | Qwen3-30B-A3B-Q3 | 24 tok/s |
 
 ## License
 
 MIT
+
+## Author
+
+lawcontinue — [GitHub](https://github.com/lawcontinue)

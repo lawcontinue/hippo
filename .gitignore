@@ -8,3 +8,6 @@ _archived/
 .pytest_cache/
 build/
 *.so
+RELEASE_STRATEGY.md
+blog_*.md
+README_NEW.md

@@ -1,11 +1,8 @@
 """
 Hippo Embedding Engine — generate embeddings via Ollama-compatible API.
 
-Supports:
-  - Any Ollama embedding model (default: nomic-embed-text)
-  - L2-normalized output (cosine similarity = dot product)
-  - In-process LRU cache
-  - Batch embedding with rate limiting
+Dependencies: numpy, urllib (stdlib)
+Changed: curl → urllib.request, added dimension auto-detect, __len__
 """
 
 from __future__ import annotations
@@ -13,8 +10,9 @@ from __future__ import annotations
 import json
 import os
 import struct
-import subprocess
 import time
+import urllib.error
+import urllib.request
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -57,6 +55,10 @@ class EmbeddingEngine:
         self._endpoint = f"{self.base_url}/api/embeddings"
         self._cache: Dict[str, np.ndarray] = {}
         self._cache_size = cache_size
+        self.detected_dim: Optional[int] = None
+
+    def __len__(self) -> int:
+        return len(self._cache)
 
     # ---- public API ----
 
@@ -66,19 +68,29 @@ class EmbeddingEngine:
         if key in self._cache:
             return self._cache[key]
 
-        payload = json.dumps({"model": self.model, "prompt": text})
-        result = subprocess.run(
-            [
-                "curl", "-s", "-X", "POST", self._endpoint,
-                "-H", "Content-Type: application/json",
-                "-d", payload,
-            ],
-            capture_output=True, text=True, timeout=30,
+        payload = json.dumps({"model": self.model, "prompt": text}).encode()
+        req = urllib.request.Request(
+            self._endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError(f"Embedding request failed: {result.stderr}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read())
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"Embedding request failed: {e}") from e
 
-        vec = np.array(json.loads(result.stdout)["embedding"], dtype=np.float32)
+        vec = np.array(body["embedding"], dtype=np.float32)
+
+        # dimension auto-detect + assert
+        if self.detected_dim is None:
+            self.detected_dim = len(vec)
+        else:
+            assert len(vec) == self.detected_dim, (
+                f"Dimension mismatch: expected {self.detected_dim}, got {len(vec)}"
+            )
+
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec = vec / norm
@@ -90,7 +102,12 @@ class EmbeddingEngine:
         return vec
 
     def embed_batch(self, texts: List[str], batch_size: int = 8, pause: float = 0.05) -> np.ndarray:
-        """Batch-embed texts with optional pause between mini-batches."""
+        """Batch-embed texts with optional pause between mini-batches.
+
+        The first call triggers dimension auto-detection via ``embed()``,
+        which sets ``self.detected_dim``.  Subsequent embeddings are
+        validated against the detected dimension.
+        """
         out: list[np.ndarray] = []
         for i in range(0, len(texts), batch_size):
             for t in texts[i : i + batch_size]:

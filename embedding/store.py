@@ -1,12 +1,8 @@
 """
 Hippo VectorStore — lightweight vector search backed by SQLite.
 
-Features:
-  - Store documents with metadata + embedding vectors
-  - Cosine similarity search (dot product on L2-normalized vectors)
-  - Filter by arbitrary metadata key/value pairs
-  - Full in-memory index for fast queries (<1 ms on thousands of entries)
-  - Persistent SQLite storage
+Changed: added mode parameter (dense/hybrid/sparse), BM25 integration, RRF fusion.
+Dependencies: numpy, sqlite3 (stdlib)
 """
 
 from __future__ import annotations
@@ -15,11 +11,13 @@ import json as _json
 import os
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
+from .bm25 import BM25Index
 from .engine import EmbeddingEngine, blob_to_vector, vector_to_blob
+from .tokenizer import default_tokenizer
 
 __all__ = ["VectorStore", "Document"]
 
@@ -37,26 +35,35 @@ class VectorStore:
     """
     SQLite-backed vector store with in-memory index.
 
-    Usage::
-
-        store = VectorStore("/tmp/my_store.db")
-        store.add("Hello world", {"source": "greeting"})
-        results = store.search("hi", top_k=3)
+    mode: "dense" (default), "hybrid" (BM25+dense RRF), "sparse" (pure BM25)
     """
 
     def __init__(
         self,
         db_path: str = "vectorstore.db",
         embedding_engine: Optional[EmbeddingEngine] = None,
+        mode: str = "dense",
+        tokenizer: Callable = None,
     ):
         self.db_path = db_path
         self.engine = embedding_engine or EmbeddingEngine()
+        self.mode = mode
         db_dir = os.path.dirname(os.path.abspath(db_path))
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         self._entries: List[tuple] = []  # (id, text, metadata_json, vec)
+        self._entry_map: Dict[int, tuple] = {}  # doc_id → entry tuple
         self._init_db()
         self._load_all()
+
+        # BM25 for hybrid/sparse modes
+        self._bm25: Optional[BM25Index] = None
+        if mode != "dense":
+            tok = tokenizer or default_tokenizer
+            self._bm25 = BM25Index(tokenizer=tok)
+            # reindex existing docs into BM25
+            for doc_id, text, _, _ in self._entries:
+                self._bm25.add(str(doc_id), text)
 
     # ---- internal ----
 
@@ -79,6 +86,36 @@ class VectorStore:
                 mid, text, meta_json, blob = row
                 vec = blob_to_vector(blob)
                 self._entries.append((mid, text, meta_json, vec))
+                self._entry_map[mid] = self._entries[-1]
+
+    def _rrf_fuse(self, dense_results: List[Document], sparse_results: List[tuple], k: int = 60) -> List[Document]:
+        """Reciprocal Rank Fusion of dense and sparse results."""
+        scores: Dict[int, float] = {}
+        doc_map: Dict[int, Document] = {}
+
+        for rank, doc in enumerate(dense_results):
+            scores[doc.id] = scores.get(doc.id, 0) + 1.0 / (k + rank + 1)
+            doc_map[doc.id] = doc
+
+        # sparse_results = [(doc_id_str, score), ...]
+        for rank, (doc_id_str, _) in enumerate(sparse_results):
+            did = int(doc_id_str)
+            scores[did] = scores.get(did, 0) + 1.0 / (k + rank + 1)
+            if did not in doc_map:
+                # find in entries
+                for mid, text, meta_json, vec in self._entries:
+                    if mid == did:
+                        doc_map[did] = Document(id=mid, text=text, metadata=_json_loads(meta_json))
+                        break
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        results: List[Document] = []
+        for doc_id, score in ranked:
+            doc = doc_map.get(doc_id)
+            if doc:
+                doc.score = round(score, 6)
+                results.append(doc)
+        return results
 
     # ---- public API ----
 
@@ -96,6 +133,11 @@ class VectorStore:
             )
             doc_id = cur.lastrowid
         self._entries.append((doc_id, text, meta_json, vec))
+        self._entry_map[doc_id] = self._entries[-1]
+
+        if self._bm25 is not None:
+            self._bm25.add(str(doc_id), text)
+
         return doc_id
 
     def add_batch(self, items: List[tuple]) -> List[int]:
@@ -114,6 +156,9 @@ class VectorStore:
                 doc_id = cur.lastrowid
                 ids.append(doc_id)
                 self._entries.append((doc_id, text, meta_json, vecs[i]))
+                self._entry_map[doc_id] = self._entries[-1]
+                if self._bm25 is not None:
+                    self._bm25.add(str(doc_id), text)
         return ids
 
     def search(
@@ -124,20 +169,21 @@ class VectorStore:
         filter: Optional[Dict[str, Any]] = None,
     ) -> List[Document]:
         """
-        Search by cosine similarity.
-
-        Args:
-            query: Query text.
-            top_k: Max results.
-            threshold: Minimum similarity score.
-            filter: Metadata key/value pairs to filter on.
-
-        Returns:
-            List of Document sorted by score descending.
+        Search by mode:
+          - dense: cosine similarity
+          - sparse: BM25
+          - hybrid: RRF fusion of dense + sparse
         """
+        if self.mode == "sparse":
+            return self._search_sparse(query, top_k)
+        elif self.mode == "hybrid":
+            return self._search_hybrid(query, top_k, threshold, filter)
+        else:
+            return self._search_dense(query, top_k, threshold, filter)
+
+    def _search_dense(self, query, top_k, threshold, filter):
         qvec = self.engine.embed(query)
         results: List[Document] = []
-
         for mid, text, meta_json, vec in self._entries:
             if filter:
                 meta = _json_loads(meta_json)
@@ -150,14 +196,36 @@ class VectorStore:
                     metadata=_json_loads(meta_json),
                     score=round(score, 4),
                 ))
-
         results.sort(key=lambda d: d.score, reverse=True)
         return results[:top_k]
+
+    def _search_sparse(self, query, top_k):
+        raw = self._bm25.search(query, top_k)
+        results: List[Document] = []
+        for doc_id_str, score in raw:
+            did = int(doc_id_str)
+            entry = self._entry_map.get(did)
+            if entry:
+                results.append(Document(
+                    id=did, text=entry[1],
+                    metadata=_json_loads(entry[2]),
+                    score=round(score, 4),
+                ))
+        return results
+
+    def _search_hybrid(self, query, top_k, threshold, filter):
+        dense = self._search_dense(query, top_k * 2, threshold, filter)
+        sparse = self._bm25.search(query, top_k * 2)
+        fused = self._rrf_fuse(dense, sparse)
+        return fused[:top_k]
 
     def delete(self, doc_id: int) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         self._entries = [e for e in self._entries if e[0] != doc_id]
+        self._entry_map.pop(doc_id, None)
+        if self._bm25 is not None:
+            self._bm25.delete(str(doc_id))
         return True
 
     def count(self) -> int:
@@ -166,6 +234,10 @@ class VectorStore:
     def rebuild(self) -> int:
         """Reload index from disk."""
         self._load_all()
+        if self._bm25 is not None:
+            self._bm25 = BM25Index(tokenizer=self._bm25._tokenizer)
+            for doc_id, text, _, _ in self._entries:
+                self._bm25.add(str(doc_id), text)
         return len(self._entries)
 
 

@@ -1,6 +1,6 @@
 # Hippo 🦛
 
-`pip install hippo-llm` | Python 3.10+ | MIT
+`pip install hippo-llm` | Python 3.10+ | MIT | [中文文档](./README_CN.md)
 
 Run 30B models on a ¥3800 GPU at 78 tok/s. Then search through your documents without installing ChromaDB.
 

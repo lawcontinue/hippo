@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import time
-import threading
-import urllib.request
 import json
+import threading
+import time
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 

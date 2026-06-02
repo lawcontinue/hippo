@@ -6,8 +6,8 @@ import json
 import logging
 import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Dict
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 from urllib.parse import urlparse
 
 from .registry import NodeRegistry

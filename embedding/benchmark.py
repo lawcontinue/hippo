@@ -12,19 +12,15 @@ Output: Markdown table of results.
 from __future__ import annotations
 
 import argparse
-import sys
 import tempfile
 import time
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np
 
-from .ann_index import ANNConfig, ANNIndex, HAS_HNSW
+from .ann_index import HAS_HNSW, ANNConfig, ANNIndex
 from .bm25 import BM25Index
-from .engine import EmbeddingEngine
 from .store import VectorStore
-
 
 # ---- Synthetic data generator ----
 

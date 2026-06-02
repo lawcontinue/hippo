@@ -88,19 +88,23 @@ class VectorStore:
                 self._entries.append((mid, text, meta_json, vec))
                 self._entry_map[mid] = self._entries[-1]
 
-    def _rrf_fuse(self, dense_results: List[Document], sparse_results: List[tuple], k: int = 60) -> List[Document]:
-        """Reciprocal Rank Fusion of dense and sparse results."""
+    def _rrf_fuse(self, dense_results: List[Document], sparse_results: List[tuple],
+                  k: int = 60, dense_weight: float = 1.0, sparse_weight: float = 1.0) -> List[Document]:
+        """Reciprocal Rank Fusion with configurable dense/sparse weights.
+
+        RRF score = dense_weight / (k + rank_dense + 1) + sparse_weight / (k + rank_sparse + 1)
+        """
         scores: Dict[int, float] = {}
         doc_map: Dict[int, Document] = {}
 
         for rank, doc in enumerate(dense_results):
-            scores[doc.id] = scores.get(doc.id, 0) + 1.0 / (k + rank + 1)
+            scores[doc.id] = scores.get(doc.id, 0) + dense_weight / (k + rank + 1)
             doc_map[doc.id] = doc
 
         # sparse_results = [(doc_id_str, score), ...]
         for rank, (doc_id_str, _) in enumerate(sparse_results):
             did = int(doc_id_str)
-            scores[did] = scores.get(did, 0) + 1.0 / (k + rank + 1)
+            scores[did] = scores.get(did, 0) + sparse_weight / (k + rank + 1)
             if did not in doc_map:
                 # find in entries
                 for mid, text, meta_json, vec in self._entries:

@@ -241,12 +241,11 @@ def test_import_json():
 from embedding.engine import EmbeddingEngine
 
 
-def test_engine_urllib():
-    """Verify engine uses urllib (import check — no subprocess)."""
+def test_engine_no_subprocess():
+    """Verify engine does not shell out to subprocess."""
     import embedding.engine as mod
     import inspect
-    src = inspect.getsource(mod.EmbeddingEngine.embed)
-    assert "urlopen" in src
+    src = inspect.getsource(mod)
     assert "subprocess" not in src
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hippo-llm"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local LLM inference + embedding & search in one package. Run 30B on consumer hardware, RAG without ChromaDB."
 readme = "README.md"
 license = "MIT"

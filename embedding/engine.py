@@ -1,18 +1,15 @@
 """
-Hippo Embedding Engine — generate embeddings via Ollama-compatible API.
+Hippo Embedding Engine — generate embeddings via sentence-transformers.
 
-Dependencies: numpy, urllib (stdlib)
-Changed: curl → urllib.request, added dimension auto-detect, __len__
+Dependencies: numpy, sentence-transformers
+Changed: Ollama API → sentence-transformers local inference (2026-05-31)
 """
 
 from __future__ import annotations
 
-import json
 import os
 import struct
-import time
-import urllib.error
-import urllib.request
+import threading
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -21,9 +18,10 @@ __all__ = ["EmbeddingEngine", "blob_to_vector", "vector_to_blob"]
 
 # ---------- helpers ----------
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-DEFAULT_MODEL = "nomic-embed-text"
-DEFAULT_DIM = 768
+DEFAULT_MODEL = os.environ.get("HIPPO_EMBED_MODEL", "BAAI/bge-m3")
+# Local path override (e.g. E:/models/modelscope_cache/Xorbits/bge-m3 on Windows)
+LOCAL_MODEL_PATH = os.environ.get("HIPPO_EMBED_MODEL_PATH", "")
+DEFAULT_DIM = 1024
 
 
 def blob_to_vector(blob: bytes) -> np.ndarray:
@@ -40,22 +38,34 @@ def vector_to_blob(vec: np.ndarray) -> bytes:
 # ---------- EmbeddingEngine ----------
 
 class EmbeddingEngine:
-    """Generate embeddings through an Ollama-compatible /api/embeddings endpoint."""
+    """Generate embeddings through sentence-transformers (local, no Ollama)."""
+
+    _global_model = None
+    _global_lock = threading.Lock()
 
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
         dim: int = DEFAULT_DIM,
-        base_url: Optional[str] = None,
+        base_url: Optional[str] = None,  # ignored, kept for API compat
         cache_size: int = 512,
     ):
         self.model = model
         self.dim = dim
-        self.base_url = (base_url or OLLAMA_URL).rstrip("/")
-        self._endpoint = f"{self.base_url}/api/embeddings"
         self._cache: Dict[str, np.ndarray] = {}
         self._cache_size = cache_size
         self.detected_dim: Optional[int] = None
+
+    @classmethod
+    def _get_model(cls, model_name: str):
+        """Lazy-load sentence-transformers model (singleton)."""
+        if cls._global_model is None:
+            with cls._global_lock:
+                if cls._global_model is None:
+                    from sentence_transformers import SentenceTransformer
+                    path = LOCAL_MODEL_PATH or model_name
+                    cls._global_model = SentenceTransformer(path, local_files_only=True)
+        return cls._global_model
 
     def __len__(self) -> int:
         return len(self._cache)
@@ -68,20 +78,8 @@ class EmbeddingEngine:
         if key in self._cache:
             return self._cache[key]
 
-        payload = json.dumps({"model": self.model, "prompt": text}).encode()
-        req = urllib.request.Request(
-            self._endpoint,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read())
-        except (urllib.error.URLError, OSError) as e:
-            raise RuntimeError(f"Embedding request failed: {e}") from e
-
-        vec = np.array(body["embedding"], dtype=np.float32)
+        st_model = self._get_model(self.model)
+        vec = st_model.encode(text, normalize_embeddings=True).astype(np.float32)
 
         # dimension auto-detect + assert
         if self.detected_dim is None:
@@ -101,20 +99,14 @@ class EmbeddingEngine:
         self._cache[key] = vec
         return vec
 
-    def embed_batch(self, texts: List[str], batch_size: int = 8, pause: float = 0.05) -> np.ndarray:
-        """Batch-embed texts with optional pause between mini-batches.
-
-        The first call triggers dimension auto-detection via ``embed()``,
-        which sets ``self.detected_dim``.  Subsequent embeddings are
-        validated against the detected dimension.
-        """
-        out: list[np.ndarray] = []
-        for i in range(0, len(texts), batch_size):
-            for t in texts[i : i + batch_size]:
-                out.append(self.embed(t))
-            if i + batch_size < len(texts):
-                time.sleep(pause)
-        return np.array(out, dtype=np.float32)
+    def embed_batch(self, texts: List[str], batch_size: int = 32, pause: float = 0.0) -> np.ndarray:
+        """Batch-embed texts using sentence-transformers batch encode."""
+        st_model = self._get_model(self.model)
+        vecs = st_model.encode(texts, batch_size=batch_size, normalize_embeddings=True)
+        arr = np.array(vecs, dtype=np.float32)
+        if self.detected_dim is None and len(arr) > 0:
+            self.detected_dim = arr.shape[1]
+        return arr
 
     def clear_cache(self) -> None:
         self._cache.clear()

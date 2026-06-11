@@ -7,8 +7,9 @@ Prerequisites:
     3. Run this script: python3 examples/quickstart_rag.py
 """
 
-from hippo.embedding import EmbeddingEngine, VectorStore
 import openai
+
+from hippo.embedding import EmbeddingEngine, VectorStore
 
 # 1. Index your documents (one-time)
 engine = EmbeddingEngine(model="nomic-embed-text")

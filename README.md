@@ -1,6 +1,11 @@
 # Hippo 🦛
 
-`pip install hippo-llm` | Python 3.10+ | MIT | [中文文档](./README_CN.md)
+[![CI](https://github.com/lawcontinue/hippo/actions/workflows/ci.yml/badge.svg)](https://github.com/lawcontinue/hippo/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/hippo-llm.svg)](https://pypi.org/project/hippo-llm/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+`pip install hippo-llm` | [中文文档](./README_CN.md) | [Examples](./examples/)
 
 Run 30B models on a ¥3800 GPU at 78 tok/s. Then search through your documents without installing ChromaDB.
 

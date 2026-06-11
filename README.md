@@ -9,6 +9,11 @@
 
 Run 30B models on a ¥3800 GPU at 78 tok/s. Then search through your documents without installing ChromaDB.
 
+<p align="center">
+  <img src="docs/demo_serve.png" width="49%" alt="Hippo serving demo">
+  <img src="docs/demo_search.png" width="49%" alt="Hippo search demo">
+</p>
+
 ## 30-second setup
 
 ```bash

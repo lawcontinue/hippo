@@ -92,6 +92,19 @@ class VectorStore:
             for doc_id, text, _, _ in self._entries:
                 self._bm25.add(str(doc_id), text)
 
+        # Warn if hybrid mode but most docs lack embeddings (e.g. sparse→hybrid upgrade)
+        if self._use_embedding and self._entries:
+            null_count = sum(1 for _, _, _, vec in self._entries if vec is None)
+            if null_count > len(self._entries) * 0.5:
+                import warnings
+                warnings.warn(
+                    f"{null_count}/{len(self._entries)} documents have no embedding vectors. "
+                    f"Hybrid search degrades to sparse-only for those docs. "
+                    f"Run store.rebuild_embeddings(engine) to generate embeddings.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
     @property
     def engine(self):
         """Lazy-load embedding engine only when needed (dense/hybrid modes)."""
@@ -159,10 +172,9 @@ class VectorStore:
             did = int(doc_id_str)
             scores[did] = scores.get(did, 0) + sparse_weight / (k + rank + 1)
             if did not in doc_map:
-                for mid, text, meta_json, _ in self._entries:
-                    if mid == did:
-                        doc_map[did] = Document(id=mid, text=text, metadata=_json_loads(meta_json))
-                        break
+                entry = self._entry_map.get(did)
+                if entry:
+                    doc_map[did] = Document(id=did, text=entry[1], metadata=_json_loads(entry[2]))
 
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         results: List[Document] = []
@@ -346,6 +358,34 @@ class VectorStore:
             for doc_id, text, _, _ in self._entries:
                 self._bm25.add(str(doc_id), text)
         return len(self._entries)
+
+    def rebuild_embeddings(self, engine=None) -> int:
+        """Generate embeddings for documents that lack them (e.g. after sparse→hybrid upgrade).
+
+        Returns the number of documents re-embedded.
+        """
+        if not self._use_embedding:
+            raise ValueError("rebuild_embeddings() requires dense or hybrid mode")
+
+        eng = engine or self.engine
+        _, vector_to_blob = _get_blob_helpers()
+
+        # Find docs with NULL embeddings
+        to_embed = [(mid, text) for mid, text, _, vec in self._entries if vec is None]
+        if not to_embed:
+            return 0
+
+        texts = [t for _, t in to_embed]
+        vecs = eng.embed_batch(texts)
+
+        with sqlite3.connect(self.db_path) as conn:
+            for i, (mid, _) in enumerate(to_embed):
+                blob = vector_to_blob(vecs[i])
+                conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (blob, mid))
+
+        # Reload
+        self._load_all()
+        return len(to_embed)
 
 
 # ---- JSON helpers ----

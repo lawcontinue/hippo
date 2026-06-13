@@ -27,7 +27,7 @@ Your sparse-mode database migrates automatically — no re-indexing needed.
 
 Real numbers from production use:
 - BM25 query: <1ms (pure Python + SQLite)
-- Dense embedding (bge-small-zh): 5ms/query
+- Dense embedding (bge-small-zh, 512d): 5ms/query, 85.5% top-1 standalone
 - Hybrid RRF fusion: 91.8% top-1 on OOD 110 queries (keyword and embedding are complementary — 42 correct unique to each)
 - Chinese tokenizer built-in, zero config
 
@@ -228,14 +228,57 @@ The key insight: keyword search and embedding search have completely different e
 
 ## Full RAG pipeline
 
-[Tutorial with local LLM integration using OpenAI-compatible API]
+Combine Hippo's hybrid search with a local LLM for a complete RAG system:
+
+```python
+from hippo.embedding import EmbeddingEngine, VectorStore
+import openai
+
+# 1. Index your documents
+engine = EmbeddingEngine(model="nomic-embed-text")
+store = VectorStore("knowledge.db", mode="hybrid", embedding_engine=engine)
+
+store.add_batch([
+    {"text": "Hippo splits model layers across multiple devices using TCP."},
+    {"text": "Each device only loads its shard of layers, reducing memory per device."},
+    {"text": "The loop detector catches semantic repetition using Jaccard similarity."},
+    {"text": "BM25 hybrid search combines keyword matching with semantic similarity."},
+], engine=engine)
+
+# 2. Search
+query = "how does hippo handle memory?"
+results = store.search(query, engine=engine, top_k=2)
+context = "\n".join(doc.text for doc in results)
+
+# 3. Generate answer with local LLM (OpenAI-compatible API)
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+response = client.chat.completions.create(
+    model="qwen3-30b-a3b-q3",
+    messages=[
+        {"role": "system", "content": f"Answer based on this context:\n{context}"},
+        {"role": "user", "content": query}
+    ]
+)
+print(response.choices[0].message.content)
+```
+
+If you started with sparse mode and want to upgrade an existing database:
+
+```python
+store = VectorStore("knowledge.db", mode="hybrid", embedding_engine=engine)
+store.rebuild_embeddings(engine)  # backfill embeddings for existing docs
+```
+
+No re-indexing. No data loss. Same API.
 
 ## Chinese support
 
-Built-in CJK tokenizer with stop words. No jieba, no external dependencies.
+Built-in CJK tokenizer: single-character segmentation for Chinese/Japanese/Korean, whitespace splitting for English, with stop word filtering for both. No jieba, no external dependencies.
 
-store.add_batch([{"text": "中文文档直接搜索"}])
+store.add_batch([{"text": "中文文档直接搜索，无需配置分词器"}])
 store.search("搜索")  # works immediately
+
+The tokenizer handles mixed Chinese/English text naturally — CJK characters get single-char tokens, English words get whitespace-split tokens. This is simpler than jieba but sufficient for BM25 ranking, where exact match precision matters more than linguistic accuracy.
 
 ## When to use what
 

@@ -68,7 +68,8 @@ Benchmarks from actual use (not synthetic):
 |-----------|---------|---------------------------|
 | BM25 | <1ms | keyword-only baseline |
 | bge-small-zh (512d) | 5ms | 85.5% top-1 |
-| Hybrid RRF | <1ms overhead | 91.8% top-1 |
+| bge-m3 (1024d) | 630ms | 92.7% top-1 (offline, high quality) |
+| Hybrid RRF (small-zh) | <1ms overhead | 91.8% top-1 |
 | ANN (10K docs) | ~2s build | — |
 
 The fusion works because keyword and embedding have completely different error modes — each gets 42 queries right that the other misses. That's the real value of hybrid: not one-or-the-other, but both.
@@ -282,9 +283,24 @@ The tokenizer handles mixed Chinese/English text naturally — CJK characters ge
 
 ## When to use what
 
-- `mode="sparse"` (default): prototyping, small collections, no GPU
-- `mode="hybrid"`: production RAG, semantic routing, agent memory
-- `mode="dense"`: pure similarity search, no keyword matching needed
+**Sparse (default)** — prototyping, small collections, no GPU needed:
+
+```python
+store = VectorStore("docs.db")  # mode="sparse" by default
+```
+
+**Hybrid** — production RAG, semantic routing, agent memory:
+
+```python
+pip install hippo-llm[embedding]
+store = VectorStore("docs.db", mode="hybrid", embedding_engine=engine)
+```
+
+**Dense** — pure similarity search, no keyword matching needed:
+
+```python
+store = VectorStore("docs.db", mode="dense", embedding_engine=engine)
+```
 
 pip install hippo-llm
 GitHub: https://github.com/lawcontinue/hippo
@@ -302,10 +318,10 @@ GitHub: https://github.com/lawcontinue/hippo
 ## 首发前检查清单
 
 - [x] README embedding 优先 + clone 即用叙事
-- [x] 实测数据嵌入（5ms, 85.5%, 91.8%）
+- [x] 实测数据嵌入（5ms, 85.5%, 91.8%, 92.7%）
 - [x] 中文场景突出
 - [x] HN/Reddit/掘金/dev.to 四篇文案就绪
-- [x] sparse→hybrid migration 自动化
-- [x] GitHub push（57dc897）
+- [x] sparse→hybrid migration 自动化 + warning + rebuild
+- [x] GitHub push（f31881a）
 - [ ] demo_search.png 更新（突出 sparse 输出）
 - [ ] HN 发帖

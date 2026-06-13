@@ -1,8 +1,11 @@
 """
 Hippo Embedding Engine — generate embeddings via sentence-transformers.
 
-Dependencies: numpy, sentence-transformers
+Dependencies (sparse mode): numpy only
+Dependencies (dense/hybrid): numpy, sentence-transformers
+
 Changed: Ollama API → sentence-transformers local inference (2026-05-31)
+         Lazy import with friendly error (2026-06-13)
 """
 
 from __future__ import annotations
@@ -38,7 +41,10 @@ def vector_to_blob(vec: np.ndarray) -> bytes:
 # ---------- EmbeddingEngine ----------
 
 class EmbeddingEngine:
-    """Generate embeddings through sentence-transformers (local, no Ollama)."""
+    """Generate embeddings through sentence-transformers (local, no Ollama).
+
+    Requires ``sentence-transformers`` — install with ``pip install hippo-llm[embedding]``.
+    """
 
     _global_model = None
     _global_lock = threading.Lock()
@@ -62,7 +68,13 @@ class EmbeddingEngine:
         if cls._global_model is None:
             with cls._global_lock:
                 if cls._global_model is None:
-                    from sentence_transformers import SentenceTransformer
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                    except ImportError:
+                        raise ImportError(
+                            "Dense embedding requires sentence-transformers. "
+                            "Install with: pip install hippo-llm[embedding]"
+                        )
                     path = LOCAL_MODEL_PATH or model_name
                     cls._global_model = SentenceTransformer(path, local_files_only=True)
         return cls._global_model

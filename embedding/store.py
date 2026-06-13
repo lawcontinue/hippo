@@ -1,8 +1,13 @@
 """
 Hippo VectorStore — lightweight vector search backed by SQLite.
 
-Changed: added mode parameter (dense/hybrid/sparse), BM25 integration, RRF fusion.
+Modes:
+  - sparse (default): BM25 only, zero external dependencies beyond numpy
+  - dense: cosine similarity via sentence-transformers
+  - hybrid: RRF fusion of BM25 + dense
+
 Dependencies: numpy, sqlite3 (stdlib)
+Optional: sentence-transformers (for dense/hybrid modes)
 """
 
 from __future__ import annotations
@@ -16,7 +21,6 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from .bm25 import BM25Index
-from .engine import EmbeddingEngine, blob_to_vector, vector_to_blob
 from .tokenizer import default_tokenizer
 
 __all__ = ["VectorStore", "Document"]
@@ -31,28 +35,51 @@ class Document:
     score: float = 0.0
 
 
+def _get_engine(embedding_engine=None):
+    """Lazy import EmbeddingEngine to avoid requiring sentence-transformers for sparse mode."""
+    if embedding_engine is not None:
+        return embedding_engine
+    from .engine import EmbeddingEngine
+    return EmbeddingEngine()
+
+
+def _get_blob_helpers():
+    """Lazy import blob helpers."""
+    from .engine import blob_to_vector, vector_to_blob
+    return blob_to_vector, vector_to_blob
+
+
 class VectorStore:
     """
     SQLite-backed vector store with in-memory index.
 
-    mode: "dense" (default), "hybrid" (BM25+dense RRF), "sparse" (pure BM25)
+    mode: "sparse" (default, BM25 only, zero deps), "dense", "hybrid" (BM25+dense RRF)
+
+    sparse mode needs only numpy. dense/hybrid need sentence-transformers
+    (install with ``pip install hippo-llm[embedding]``).
     """
 
     def __init__(
         self,
         db_path: str = "vectorstore.db",
-        embedding_engine: Optional[EmbeddingEngine] = None,
-        mode: str = "dense",
+        embedding_engine: Optional[Any] = None,  # EmbeddingEngine, lazy imported
+        mode: str = "sparse",
         tokenizer: Callable = None,
     ):
         self.db_path = db_path
-        self.engine = embedding_engine or EmbeddingEngine()
         self.mode = mode
+        self._engine = None  # lazy init
+        self._engine_arg = embedding_engine  # stored for lazy init
+
         db_dir = os.path.dirname(os.path.abspath(db_path))
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
-        self._entries: List[tuple] = []  # (id, text, metadata_json, vec)
+        self._entries: List[tuple] = []  # (id, text, metadata_json, vec_or_none)
         self._entry_map: Dict[int, tuple] = {}  # doc_id → entry tuple
+
+        # For sparse mode, no embedding column needed
+        self._use_embedding = mode != "sparse"
+
         self._init_db()
         self._load_all()
 
@@ -65,35 +92,62 @@ class VectorStore:
             for doc_id, text, _, _ in self._entries:
                 self._bm25.add(str(doc_id), text)
 
+    @property
+    def engine(self):
+        """Lazy-load embedding engine only when needed (dense/hybrid modes)."""
+        if self._engine is None and self._use_embedding:
+            self._engine = _get_engine(self._engine_arg)
+        return self._engine
+
     # ---- internal ----
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    text TEXT NOT NULL,
-                    metadata TEXT NOT NULL DEFAULT '{}',
-                    embedding BLOB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            if self._use_embedding:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        text TEXT NOT NULL,
+                        metadata TEXT NOT NULL DEFAULT '{}',
+                        embedding BLOB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            else:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        text TEXT NOT NULL,
+                        metadata TEXT NOT NULL DEFAULT '{}',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+            # Migration: sparse→dense/hybrid upgrade — add embedding column if missing
+            if self._use_embedding:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+                if 'embedding' not in cols:
+                    conn.execute("ALTER TABLE documents ADD COLUMN embedding BLOB")
 
     def _load_all(self):
         self._entries.clear()
+        blob_to_vector, _ = _get_blob_helpers() if self._use_embedding else (None, None)
         with sqlite3.connect(self.db_path) as conn:
-            for row in conn.execute("SELECT id, text, metadata, embedding FROM documents"):
-                mid, text, meta_json, blob = row
-                vec = blob_to_vector(blob)
-                self._entries.append((mid, text, meta_json, vec))
-                self._entry_map[mid] = self._entries[-1]
+            if self._use_embedding:
+                for row in conn.execute("SELECT id, text, metadata, embedding FROM documents"):
+                    mid, text, meta_json, blob = row
+                    vec = blob_to_vector(blob) if blob else None
+                    self._entries.append((mid, text, meta_json, vec))
+                    self._entry_map[mid] = self._entries[-1]
+            else:
+                for row in conn.execute("SELECT id, text, metadata FROM documents"):
+                    mid, text, meta_json = row
+                    self._entries.append((mid, text, meta_json, None))
+                    self._entry_map[mid] = self._entries[-1]
 
     def _rrf_fuse(self, dense_results: List[Document], sparse_results: List[tuple],
                   k: int = 60, dense_weight: float = 1.0, sparse_weight: float = 1.0) -> List[Document]:
-        """Reciprocal Rank Fusion with configurable dense/sparse weights.
-
-        RRF score = dense_weight / (k + rank_dense + 1) + sparse_weight / (k + rank_sparse + 1)
-        """
+        """Reciprocal Rank Fusion with configurable dense/sparse weights."""
         scores: Dict[int, float] = {}
         doc_map: Dict[int, Document] = {}
 
@@ -101,13 +155,11 @@ class VectorStore:
             scores[doc.id] = scores.get(doc.id, 0) + dense_weight / (k + rank + 1)
             doc_map[doc.id] = doc
 
-        # sparse_results = [(doc_id_str, score), ...]
         for rank, (doc_id_str, _) in enumerate(sparse_results):
             did = int(doc_id_str)
             scores[did] = scores.get(did, 0) + sparse_weight / (k + rank + 1)
             if did not in doc_map:
-                # find in entries
-                for mid, text, meta_json, vec in self._entries:
+                for mid, text, meta_json, _ in self._entries:
                     if mid == did:
                         doc_map[did] = Document(id=mid, text=text, metadata=_json_loads(meta_json))
                         break
@@ -126,43 +178,90 @@ class VectorStore:
     def add(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> int:
         """Add a document and return its ID."""
         metadata = metadata or {}
-        vec = self.engine.embed(text)
         meta_json = _json_dumps(metadata)
-        blob = vector_to_blob(vec)
 
-        with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute(
-                "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
-                (text, meta_json, blob),
-            )
-            doc_id = cur.lastrowid
-        self._entries.append((doc_id, text, meta_json, vec))
-        self._entry_map[doc_id] = self._entries[-1]
-
-        if self._bm25 is not None:
-            self._bm25.add(str(doc_id), text)
-
-        return doc_id
-
-    def add_batch(self, items: List[tuple]) -> List[int]:
-        """Add multiple documents. *items* = [(text, metadata), ...]."""
-        texts = [t for t, _ in items]
-        vecs = self.engine.embed_batch(texts)
-        ids: List[int] = []
-        with sqlite3.connect(self.db_path) as conn:
-            for i, (text, meta) in enumerate(items):
-                meta_json = _json_dumps(meta or {})
-                blob = vector_to_blob(vecs[i])
+        if self._use_embedding:
+            _, vector_to_blob = _get_blob_helpers()
+            vec = self.engine.embed(text)
+            blob = vector_to_blob(vec)
+            with sqlite3.connect(self.db_path) as conn:
                 cur = conn.execute(
                     "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
                     (text, meta_json, blob),
                 )
                 doc_id = cur.lastrowid
-                ids.append(doc_id)
-                self._entries.append((doc_id, text, meta_json, vecs[i]))
-                self._entry_map[doc_id] = self._entries[-1]
-                if self._bm25 is not None:
-                    self._bm25.add(str(doc_id), text)
+            self._entries.append((doc_id, text, meta_json, vec))
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.execute(
+                    "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                    (text, meta_json),
+                )
+                doc_id = cur.lastrowid
+            self._entries.append((doc_id, text, meta_json, None))
+
+        self._entry_map[doc_id] = self._entries[-1]
+        if self._bm25 is not None:
+            self._bm25.add(str(doc_id), text)
+        return doc_id
+
+    def add_batch(self, items: List[Any], engine: Any = None) -> List[int]:
+        """Add multiple documents.
+
+        *items* format:
+          - list of dicts: [{"text": "...", "metadata": {...}}, ...]
+          - list of tuples: [("text", metadata_dict), ...]
+        """
+        # Normalize to (text, metadata) tuples
+        normalized = []
+        for item in items:
+            if isinstance(item, dict):
+                normalized.append((item.get("text", ""), item.get("metadata", {})))
+            elif isinstance(item, (list, tuple)):
+                text = item[0]
+                meta = item[1] if len(item) > 1 else {}
+                normalized.append((text, meta))
+            else:
+                normalized.append((str(item), {}))
+
+        ids: List[int] = []
+
+        if self._use_embedding:
+            _, vector_to_blob = _get_blob_helpers()
+            # Use provided engine or self.engine
+            eng = engine or self.engine
+            texts = [t for t, _ in normalized]
+            vecs = eng.embed_batch(texts)
+            with sqlite3.connect(self.db_path) as conn:
+                for i, (text, meta) in enumerate(normalized):
+                    meta_json = _json_dumps(meta or {})
+                    blob = vector_to_blob(vecs[i])
+                    cur = conn.execute(
+                        "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
+                        (text, meta_json, blob),
+                    )
+                    doc_id = cur.lastrowid
+                    ids.append(doc_id)
+                    self._entries.append((doc_id, text, meta_json, vecs[i]))
+                    self._entry_map[doc_id] = self._entries[-1]
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                for text, meta in normalized:
+                    meta_json = _json_dumps(meta or {})
+                    cur = conn.execute(
+                        "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                        (text, meta_json),
+                    )
+                    doc_id = cur.lastrowid
+                    ids.append(doc_id)
+                    self._entries.append((doc_id, text, meta_json, None))
+                    self._entry_map[doc_id] = self._entries[-1]
+
+        # BM25 index
+        if self._bm25 is not None:
+            for i, (text, _) in enumerate(normalized):
+                self._bm25.add(str(ids[i]), text)
+
         return ids
 
     def search(
@@ -171,24 +270,28 @@ class VectorStore:
         top_k: int = 5,
         threshold: float = 0.0,
         filter: Optional[Dict[str, Any]] = None,
+        engine: Any = None,
     ) -> List[Document]:
         """
         Search by mode:
+          - sparse (default): BM25
           - dense: cosine similarity
-          - sparse: BM25
           - hybrid: RRF fusion of dense + sparse
         """
         if self.mode == "sparse":
             return self._search_sparse(query, top_k)
         elif self.mode == "hybrid":
-            return self._search_hybrid(query, top_k, threshold, filter)
+            return self._search_hybrid(query, top_k, threshold, filter, engine)
         else:
-            return self._search_dense(query, top_k, threshold, filter)
+            return self._search_dense(query, top_k, threshold, filter, engine)
 
-    def _search_dense(self, query, top_k, threshold, filter):
-        qvec = self.engine.embed(query)
+    def _search_dense(self, query, top_k, threshold, filter, engine=None):
+        eng = engine or self.engine
+        qvec = eng.embed(query)
         results: List[Document] = []
         for mid, text, meta_json, vec in self._entries:
+            if vec is None:
+                continue
             if filter:
                 meta = _json_loads(meta_json)
                 if not all(meta.get(k) == v for k, v in filter.items()):
@@ -217,8 +320,8 @@ class VectorStore:
                 ))
         return results
 
-    def _search_hybrid(self, query, top_k, threshold, filter):
-        dense = self._search_dense(query, top_k * 2, threshold, filter)
+    def _search_hybrid(self, query, top_k, threshold, filter, engine=None):
+        dense = self._search_dense(query, top_k * 2, threshold, filter, engine)
         sparse = self._bm25.search(query, top_k * 2)
         fused = self._rrf_fuse(dense, sparse)
         return fused[:top_k]

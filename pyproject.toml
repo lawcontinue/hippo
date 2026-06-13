@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hippo-llm"
 version = "0.3.1"
-description = "Local LLM inference + embedding & search in one package. Run 30B on consumer hardware, RAG without ChromaDB."
+description = "Local embedding + hybrid search for AI agents. BM25 + dense + ANN, zero external DB, Chinese-optimized."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "lawcontinue", email = "lawcontinue@users.noreply.github.com"},
 ]
-keywords = ["mlx", "llm", "inference", "distributed", "pipeline-parallelism", "speculative-decoding", "apple-silicon", "embedding", "vector-search", "rag", "bm25", "ollama"]
+keywords = ["embedding", "vector-search", "rag", "bm25", "hybrid-search", "local-search", "chinese-tokenizer", "sqlite", "ann", "agent-memory", "llm", "apple-silicon"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -33,6 +33,9 @@ dependencies = [
 # Install with: pip install mlx mlx-lm
 
 [project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=2.2",
+]
 api = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
@@ -46,7 +49,7 @@ dev = [
     "httpx>=0.24",
     "ruff>=0.1.0",
 ]
-all = ["hippo-llm[api,web]"]
+all = ["hippo-llm[embedding,api,web]"]
 
 [project.urls]
 Homepage = "https://github.com/lawcontinue/hippo"

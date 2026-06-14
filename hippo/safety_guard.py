@@ -18,16 +18,37 @@ from __future__ import annotations
 import json
 import os
 import re
+import math
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
 # ===================================================================
-# 配置
+# Unicode 归一化 + 控制字符清除
 # ===================================================================
-@dataclass
-class SafetyConfig:
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;]*[a-zA-Z]"          # CSI
+    r"|\x1b\].*?\x07"                 # OSC (terminated)
+    r"|\x1b\].*?$"                     # OSC (unterminated)
+    r"|\x1b[^[\]()]*"                 # 其他 ESC 序列
+    r"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"  # C0 控制字符 + DEL
+    , re.DOTALL
+)
+# 零宽字符
+_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\u200e\u200f\ufeff]")
+
+
+def _normalize_text(text: str) -> str:
+    """Unicode NFC 归一化 + 同形字折叠 + 控制字符清除 + 零宽字符移除"""
+    # 1. NFC 归一化 → 折叠全角/同形字（如 Ａ→A, ｉgnore→ignore）
+    text = unicodedata.normalize("NFKC", text)
+    # 2. 移除零宽字符
+    text = _ZERO_WIDTH_RE.sub("", text)
+    # 3. 控制字符替换为空格（防 token 粘连）
+    text = _ANSI_RE.sub(" ", text)
+    return text
     max_input_length: int = 100_000
     enable_output_audit: bool = True
     risk_threshold: str = "medium"  # 兼容旧接口
@@ -75,7 +96,7 @@ _L1_HIGH_RISK: List[Tuple[str, re.Pattern]] = [
 ]
 
 _L1_MEDIUM_RISK: List[Tuple[str, re.Pattern]] = [
-    # --- 警告级（升到L2）---
+    # --- 英文中危 ---
     ("indirect_injection", re.compile(r"when\s+you\s+(?:see|read|find|encounter)\s+.*[,;]?\s*(?:do|perform|execute|respond)", re.I)),
     ("multi_turn_manipulation", re.compile(r"remember\s+(?:what\s+)?(?:i\s+)?(?:told|said|asked)\s+you\s+(?:earlier|before|previously|above)", re.I)),
     ("prompt_extraction", re.compile(r"(?:repeat|recite|dump|output|display|write\s+out)\s+(?:your\s+)?(?:system|initial|original|hidden|full\s+)?\s*(?:prompt|instructions?|rules?)", re.I)),
@@ -84,10 +105,44 @@ _L1_MEDIUM_RISK: List[Tuple[str, re.Pattern]] = [
     ("memory_poisoning", re.compile(r"(?:plant|inject|insert|implant)\s+(?:a\s+)?(?:false|fake|malicious)\s+(?:memory|fact|instruction)", re.I)),
     ("tool_bypass", re.compile(r"(?:disable|bypass|circumvent)\s+(?:the\s+)?(?:safety|security|guard|filter|tool\s+restriction)", re.I)),
     ("disclosure_coercion", re.compile(r"(?:you\s+must|you\s+have\s+to|i\s+demand)\s+(?:tell|reveal|disclose|share)\s+(?:me\s+)?(?:your|the)", re.I)),
+    # --- 中文中危 ---
+    ("cn_ignore_instructions", re.compile(r"忽略(?:之前|上面|先前|此前)(?:所有|全部)?(?:指令|提示|规则|设定)")),
+    ("cn_forget_request", re.compile(r"忘记(?:所有|全部|一切|之前)(?:说过|对话|记忆|指令)")),
+    ("cn_role_hijack", re.compile(r"你(?:现在|从现在开始|接下来)(?:是|扮演|充当|假装).*"
+                                     r"(?:没有限制|不受限制|无限制|不受约束|可以违反|不用遵守)")),
+    ("cn_prompt_leak", re.compile(r"(?:告诉|透露|显示|输出|说出)(?:我|我们)?(?:你的)?(?:系统|初始|原始|隐藏)(?:提示词|指令|规则)")),
+    ("cn_tool_bypass", re.compile(r"(?:绕过|跳过|关闭|禁用)(?:你的)?(?:安全|限制|规则|过滤)")),
 ]
 
 # ANSI转义清除
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[^[\]()]*", re.DOTALL)
+# 已移至模块顶部的 _ANSI_RE + _normalize_text
+
+
+# ===================================================================
+# 配置
+# ===================================================================
+@dataclass
+class SafetyConfig:
+    max_input_length: int = 100_000
+    enable_output_audit: bool = True
+    risk_threshold: str = "medium"  # 兼容旧接口
+    # L1 阈值
+    l1_block_threshold: int = 5
+    l1_warn_threshold: int = 2
+    # L2 阈值
+    l2_block_confidence: float = 0.85
+    l2_warn_confidence: float = 0.55
+    # L3 阈值
+    l3_block_cosine: float = 0.75
+
+    def __post_init__(self):
+        self.max_input_length = int(os.environ.get("HIPPO_MAX_INPUT_LENGTH", str(self.max_input_length)))
+        env_flag = os.environ.get("HIPPO_ENABLE_OUTPUT_AUDIT", "")
+        if env_flag in ("0", "false"):
+            self.enable_output_audit = False
+        env_risk = os.environ.get("HIPPO_RISK_THRESHOLD", "")
+        if env_risk:
+            self.risk_threshold = env_risk
 
 
 # ===================================================================
@@ -109,12 +164,13 @@ class TfidfSafetyClassifier:
         self._idf: List[float] = []
 
     def _tokenize(self, text: str) -> List[str]:
-        """中文友好分词：3-gram字符级+词级混合"""
+        """中文友好分词：2-4gram 字符级 + 词级混合（与 sklearn TfidfVectorizer 一致）"""
         text = text.lower()
         tokens = []
-        # 3-gram字符级（覆盖中文+英文）
-        for i in range(len(text) - 2):
-            tokens.append(text[i:i+3])
+        # 2-4 gram 字符级（与训练时的 ngram_range=(2,4) 一致）
+        for n in (2, 3, 4):
+            for i in range(len(text) - n + 1):
+                tokens.append(text[i:i+n])
         # 英文单词级
         for w in re.findall(r'[a-z]{2,}', text):
             tokens.append(w)
@@ -140,7 +196,6 @@ class TfidfSafetyClassifier:
             score += self._coef[idx] * tfidf
 
         # Sigmoid
-        import math
         return 1.0 / (1.0 + math.exp(-score))
 
     def is_trained(self) -> bool:
@@ -329,11 +384,13 @@ class SafetyGuard:
         90%请求在L1完成（<1ms），仅10%模糊请求走到L3（5ms）。
         """
         text = text or ""
+        warnings = []
         if len(text) > self.config.max_input_length:
+            warnings.append(f"Input truncated from {len(text)} to {self.config.max_input_length} chars")
             text = text[:self.config.max_input_length]
 
-        # 清除ANSI
-        text = _ANSI_RE.sub("", text)
+        # Unicode归一化 + 控制字符清除（P0-1/P0-2修复）
+        text = _normalize_text(text)
 
         # ===== L1: 确定性正则 =====
         high_hits = []
@@ -353,7 +410,7 @@ class SafetyGuard:
                 risk_level="high",
                 layer=1,
                 reason=f"L1 blocked: dangerous pattern ({high_hits[0]})",
-                warnings=high_hits + medium_hits,
+                warnings=warnings + high_hits + medium_hits,
                 confidence=1.0,
             )
 
@@ -364,7 +421,7 @@ class SafetyGuard:
                 risk_level="medium",
                 layer=1,
                 reason=f"L1 blocked: {len(medium_hits)} medium-risk patterns",
-                warnings=medium_hits + high_hits,
+                warnings=warnings + medium_hits + high_hits,
                 confidence=0.95,
             )
 
@@ -380,7 +437,7 @@ class SafetyGuard:
                     risk_level="high",
                     layer=2,
                     reason=f"L2 blocked: TF-IDF confidence {l2_score:.2f}",
-                    warnings=medium_hits,
+                    warnings=warnings + medium_hits,
                     confidence=l2_score,
                 )
             if l2_score >= self.config.l2_warn_confidence or needs_l2:
@@ -393,7 +450,7 @@ class SafetyGuard:
                 risk_level="safe",
                 layer=2 if self._l2_trained else 1,
                 reason="L1 clean" + (" | L2 clean" if self._l2_trained else ""),
-                warnings=medium_hits,
+                warnings=warnings + medium_hits,
                 confidence=0.0,
             )
 
@@ -406,7 +463,7 @@ class SafetyGuard:
                     risk_level="medium",
                     layer=3,
                     reason=f"L3 blocked: embedding similarity {l3_sim:.2f} → '{l3_label}'",
-                    warnings=medium_hits,
+                    warnings=warnings + medium_hits,
                     confidence=l3_sim,
                 )
 
@@ -416,7 +473,7 @@ class SafetyGuard:
             risk_level="safe",
             layer=3 if self._l3_seeded else (2 if self._l2_trained else 1),
             reason="L1 clean → L2 clean → L3 clean",
-            warnings=medium_hits,
+            warnings=warnings + medium_hits,
             confidence=0.0,
         )
 

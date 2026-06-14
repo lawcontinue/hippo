@@ -338,6 +338,29 @@ class VectorStore:
         fused = self._rrf_fuse(dense, sparse)
         return fused[:top_k]
 
+    def get_metadata(self, doc_id: int) -> Optional[Dict[str, Any]]:
+        """获取文档 metadata（公开接口，供 memory_safety 使用）. 返回 None 如果不存在"""
+        entry = self._entry_map.get(doc_id)
+        if not entry:
+            return None
+        return _json_loads(entry[2])
+
+    def update_metadata(self, doc_id: int, metadata: Dict[str, Any]) -> bool:
+        """更新文档 metadata（公开接口，供 memory_safety 使用）"""
+        entry = self._entry_map.get(doc_id)
+        if not entry:
+            return False
+        meta_json = _json_dumps(metadata)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE documents SET metadata = ? WHERE id = ?", (meta_json, doc_id))
+        # 更新内存
+        self._entry_map[doc_id] = (entry[0], entry[1], meta_json, entry[3])
+        for i, e in enumerate(self._entries):
+            if e[0] == doc_id:
+                self._entries[i] = (entry[0], entry[1], meta_json, entry[3])
+                break
+        return True
+
     def delete(self, doc_id: int) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))

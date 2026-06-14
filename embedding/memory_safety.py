@@ -64,37 +64,19 @@ def tag_memory(
     """
     if confidence is None:
         confidence = DEFAULT_CONFIDENCE.get(source, 0.5)
+    # P1-1 修复：confidence 范围验证
+    confidence = max(0.0, min(1.0, float(confidence)))
 
-    entry = store._entry_map.get(doc_id)
-    if not entry:
+    meta = store.get_metadata(doc_id)
+    if meta is None:
         return False
-
-    import json as _json
-    meta = _json.loads(entry[2]) if isinstance(entry[2], str) else entry[2]
     meta["source"] = source
     meta["confidence"] = confidence
     if reviewed_by:
         meta["reviewed_by"] = reviewed_by
         meta["reviewed_at"] = datetime.now(timezone.utc).isoformat()
 
-    meta_json = _json.dumps(meta, ensure_ascii=False)
-
-    # 更新数据库
-    import sqlite3
-    with sqlite3.connect(store.db_path) as conn:
-        conn.execute(
-            "UPDATE documents SET metadata = ? WHERE id = ?",
-            (meta_json, doc_id),
-        )
-
-    # 更新内存
-    store._entry_map[doc_id] = (entry[0], entry[1], meta_json, entry[3])
-    for i, e in enumerate(store._entries):
-        if e[0] == doc_id:
-            store._entries[i] = (entry[0], entry[1], meta_json, entry[3])
-            break
-
-    return True
+    return store.update_metadata(doc_id, meta)
 
 
 def add_with_source(
@@ -125,6 +107,7 @@ def add_with_source(
     """
     if confidence is None:
         confidence = DEFAULT_CONFIDENCE.get(source, 0.5)
+    confidence = max(0.0, min(1.0, float(confidence)))
 
     meta = metadata or {}
     meta["source"] = source
@@ -230,6 +213,17 @@ def decay_low_confidence(
                 continue
             if confidence >= threshold:
                 continue
+
+            # P1-4 修复：幂等保护，24h 内只衰减一次
+            last_decayed = meta.get("last_decayed")
+            if last_decayed:
+                try:
+                    from datetime import timedelta
+                    last_dt = datetime.fromisoformat(last_decayed)
+                    if datetime.now(timezone.utc) - last_dt < timedelta(days=1):
+                        continue  # 今天已经衰减过
+                except (ValueError, TypeError):
+                    pass
 
             # 衰减：confidence *= 0.9
             new_conf = confidence * 0.9

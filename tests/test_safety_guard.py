@@ -1,20 +1,22 @@
 """Tests for hippo.safety_guard — Shield 🛡️"""
 
 import os
+import sys
 import pytest
+sys.path.insert(0, '/Users/deepsearch/.openclaw/workspace/hippo')
 from hippo.safety_guard import (
-    SecurityConfig,
+    SafetyConfig,
     sanitize_input,
     audit_output,
     assess_risk,
 )
 
 
-# --- SecurityConfig ---
+# --- SafetyConfig ---
 
-class TestSecurityConfig:
+class TestSafetyConfig:
     def test_defaults(self):
-        cfg = SecurityConfig()
+        cfg = SafetyConfig()
         assert cfg.max_input_length == 100_000
         assert cfg.enable_output_audit is True
         assert cfg.risk_threshold == "medium"
@@ -23,7 +25,7 @@ class TestSecurityConfig:
         monkeypatch.setenv("HIPPO_MAX_INPUT_LENGTH", "500")
         monkeypatch.setenv("HIPPO_ENABLE_OUTPUT_AUDIT", "0")
         monkeypatch.setenv("HIPPO_RISK_THRESHOLD", "high")
-        cfg = SecurityConfig()
+        cfg = SafetyConfig()
         assert cfg.max_input_length == 500
         assert cfg.enable_output_audit is False
         assert cfg.risk_threshold == "high"
@@ -39,7 +41,7 @@ class TestSanitizeInput:
         assert clean == "hello world end"
 
     def test_truncation(self):
-        cfg = SecurityConfig(max_input_length=10)
+        cfg = SafetyConfig(max_input_length=10)
         clean, w = sanitize_input("a" * 100, cfg)
         assert len(clean) == 10
         assert any("truncated" in x for x in w)
@@ -107,7 +109,7 @@ class TestAuditOutput:
         assert w == []
 
     def test_audit_disabled(self):
-        cfg = SecurityConfig(enable_output_audit=False)
+        cfg = SafetyConfig(enable_output_audit=False)
         w = audit_output("user@secret.com api_key=abc123def456ghi789jkl", cfg)
         assert w == []
 

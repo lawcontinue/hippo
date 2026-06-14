@@ -18,7 +18,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-
 # ---- 来源类型常量 ----
 
 SOURCE_USER = "user"              # 用户直接提供
@@ -168,7 +167,6 @@ def search_with_confidence(
     # 先取更多候选，然后按 confidence 重新排序
     raw_results = store.search(query, top_k=top_k * 3, **kwargs)
 
-    import json as _json
 
     adjusted = []
     for doc in raw_results:

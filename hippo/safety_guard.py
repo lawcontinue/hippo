@@ -16,14 +16,13 @@ Hippo Safety Guard v2 — 三级升维安全门控 🛡️
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
-import math
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
 
 # ===================================================================
 # Unicode 归一化 + 控制字符清除
@@ -49,6 +48,13 @@ def _normalize_text(text: str) -> str:
     # 3. 控制字符替换为空格（防 token 粘连）
     text = _ANSI_RE.sub(" ", text)
     return text
+
+
+# ===================================================================
+# 配置
+# ===================================================================
+@dataclass
+class SafetyConfig:
     max_input_length: int = 100_000
     enable_output_audit: bool = True
     risk_threshold: str = "medium"  # 兼容旧接口
@@ -119,33 +125,6 @@ _L1_MEDIUM_RISK: List[Tuple[str, re.Pattern]] = [
 
 
 # ===================================================================
-# 配置
-# ===================================================================
-@dataclass
-class SafetyConfig:
-    max_input_length: int = 100_000
-    enable_output_audit: bool = True
-    risk_threshold: str = "medium"  # 兼容旧接口
-    # L1 阈值
-    l1_block_threshold: int = 5
-    l1_warn_threshold: int = 2
-    # L2 阈值
-    l2_block_confidence: float = 0.85
-    l2_warn_confidence: float = 0.55
-    # L3 阈值
-    l3_block_cosine: float = 0.75
-
-    def __post_init__(self):
-        self.max_input_length = int(os.environ.get("HIPPO_MAX_INPUT_LENGTH", str(self.max_input_length)))
-        env_flag = os.environ.get("HIPPO_ENABLE_OUTPUT_AUDIT", "")
-        if env_flag in ("0", "false"):
-            self.enable_output_audit = False
-        env_risk = os.environ.get("HIPPO_RISK_THRESHOLD", "")
-        if env_risk:
-            self.risk_threshold = env_risk
-
-
-# ===================================================================
 # L2: TF-IDF 轻量统计（0.1ms，有不确定但有速度）
 # ===================================================================
 class TfidfSafetyClassifier:
@@ -209,7 +188,6 @@ class TfidfSafetyClassifier:
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer
             from sklearn.linear_model import LogisticRegression
-            import numpy as np
         except ImportError:
             raise ImportError("训练需要 scikit-learn: pip install scikit-learn")
 

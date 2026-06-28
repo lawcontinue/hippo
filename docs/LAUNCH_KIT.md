@@ -3,7 +3,7 @@
 ## HackerNews (Show HN)
 
 ```
-Show HN: Hippo – Search your documents locally, in 30 seconds, zero dependencies
+Show HN: Hippo – Search your documents locally, in 30 seconds, zero external services
 
 pip install hippo-llm. That's it. No ChromaDB, no jieba, no cloud API, no embedding model to download.
 
@@ -33,7 +33,7 @@ Real numbers from production use:
 
 Bonus: pipeline parallelism for local LLM inference. Split any GGUF model across machines with plain TCP. Two Mac Minis run Qwen3-30B-A3B at 78 tok/s. Mac + PC mixed.
 
-MIT licensed, 32 tests. pip install hippo-llm
+MIT licensed, 112 tests. pip install hippo-llm
 
 GitHub: https://github.com/lawcontinue/hippo
 ```
@@ -81,7 +81,7 @@ Also includes pipeline parallelism for local inference: split GGUF models across
 | RTX 5060 Ti 16GB | Qwen3-14B-Q4 | 41 tok/s |
 | 2× Mac Mini M2 16GB | Qwen3-30B-A3B-Q3 | 78 tok/s |
 
-MIT, 32 tests, PyPI: pip install hippo-llm
+MIT, 112 tests, PyPI: pip install hippo-llm
 
 GitHub: https://github.com/lawcontinue/hippo
 
@@ -91,9 +91,9 @@ Happy to answer questions about the sparse→hybrid upgrade path or the fusion b
 ## 掘金
 
 ```
-Title: Hippo：pip install 30 秒搞定本地搜索，零依赖启动，按需升级 Hybrid
+Title: Hippo：pip install 1 分钟搞定本地搜索，零依赖启动，按需升级 Hybrid
 
-## 30 秒上手
+## 1 分钟上手
 
 pip install hippo-llm 之后直接写代码：
 
@@ -252,7 +252,7 @@ results = store.search(query, engine=engine, top_k=2)
 context = "\n".join(doc.text for doc in results)
 
 # 3. Generate answer with local LLM (OpenAI-compatible API)
-client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="none")
 response = client.chat.completions.create(
     model="qwen3-30b-a3b-q3",
     messages=[
@@ -323,5 +323,5 @@ GitHub: https://github.com/lawcontinue/hippo
 - [x] HN/Reddit/掘金/dev.to 四篇文案就绪
 - [x] sparse→hybrid migration 自动化 + warning + rebuild
 - [x] GitHub push（f31881a）
-- [ ] demo_search.png 更新（突出 sparse 输出）
+- [x] demo_ui.png 极简高级风搜索 UI 截图
 - [ ] HN 发帖

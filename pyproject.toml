@@ -57,7 +57,7 @@ Repository = "https://github.com/lawcontinue/hippo"
 Issues = "https://github.com/lawcontinue/hippo/issues"
 
 [tool.setuptools.packages.find]
-include = ["pipeline*", "embedding*"]
+include = ["pipeline*", "embedding*", "hippo*"]
 exclude = ["_archived*", "tests*", "scripts*"]
 
 [tool.ruff]

@@ -16,7 +16,8 @@ Hippo M0 记忆安全层 — source/confidence 来源审计 + 信任加权搜索
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---- 来源类型常量 ----
 
@@ -34,6 +35,49 @@ DEFAULT_CONFIDENCE = {
     SOURCE_EXTERNAL: 0.7,
     SOURCE_SYSTEM: 1.0,
 }
+
+# ---- 操作类型 Stake 分级（熔炉#108 S1 成果）----
+# Stake 由操作性质定义，不由 memory importance 值定义。
+# 打破"importance 决定 trust，trust 校验 importance"的循环论证。
+
+class StakeLevel(Enum):
+    """操作 stake 分级。基于操作性质，非历史记忆加权。"""
+    LOW = "low"            # 只读、内部查询
+    MEDIUM = "medium"      # 写入、状态更新
+    HIGH = "high"          # 删除、外部发送、权限变更
+    CRITICAL = "critical"  # 安全配置、密钥操作
+
+_OPERATION_STAKE_MAP: Dict[str, StakeLevel] = {
+    "read": StakeLevel.LOW,
+    "search": StakeLevel.LOW,
+    "list": StakeLevel.LOW,
+    "write": StakeLevel.MEDIUM,
+    "update": StakeLevel.MEDIUM,
+    "create": StakeLevel.MEDIUM,
+    "delete": StakeLevel.HIGH,
+    "send_external": StakeLevel.HIGH,
+    "grant_permission": StakeLevel.HIGH,
+    "revoke_permission": StakeLevel.HIGH,
+    "modify_config": StakeLevel.CRITICAL,
+    "rotate_key": StakeLevel.CRITICAL,
+    "publish_external": StakeLevel.CRITICAL,  # 发布到外部渠道（公众号/PR/issue）
+}
+
+
+def get_stake(operation: str) -> StakeLevel:
+    """
+    根据操作类型返回 stake 级别.
+
+    与记忆 importance 解耦——stake 由操作性质定义，不由历史记忆加权。
+    这是熔炉#108 的核心贡献之一（S1: 操作类型 Stake Routing）。
+    """
+    op_lower = operation.lower().strip()
+    return _OPERATION_STAKE_MAP.get(op_lower, StakeLevel.MEDIUM)
+
+
+def requires_multi_agent_trust(operation: str) -> bool:
+    """判断当前操作是否需要 multi-agent 实时 trust scoring."""
+    return get_stake(operation) in (StakeLevel.HIGH, StakeLevel.CRITICAL)
 
 
 def tag_memory(
@@ -86,6 +130,8 @@ def add_with_source(
     confidence: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
     reviewed_by: Optional[str] = None,
+    batch_confirm_id: Optional[str] = None,
+    batch_confirm_size: Optional[int] = None,
 ) -> int:
     """
     添加文档并自动标注来源审计标签.
@@ -97,6 +143,8 @@ def add_with_source(
         confidence: 置信度，None 用默认值
         metadata: 额外 metadata
         reviewed_by: 确认者
+        batch_confirm_id: 批量确认批次 ID（熔炉#108 S2: 标注替代折扣）
+        batch_confirm_size: 该批次包含的确认条目总数
 
     Returns:
         doc_id
@@ -104,6 +152,11 @@ def add_with_source(
     Example:
         doc_id = add_with_source(store, "用户偏好深色模式", source="user")
         doc_id = add_with_source(store, "可能喜欢技术文章", source="model", confidence=0.4)
+        # 批量确认：标注 batch context 但不打折扣
+        for text in batch_texts:
+            add_with_source(store, text, reviewed_by="user",
+                           batch_confirm_id="batch_20260616",
+                           batch_confirm_size=10)
     """
     if confidence is None:
         confidence = DEFAULT_CONFIDENCE.get(source, 0.5)
@@ -115,6 +168,11 @@ def add_with_source(
     if reviewed_by:
         meta["reviewed_by"] = reviewed_by
         meta["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    # 熔炉#108 S2: batch context 标注（信息完整性优先，不打折扣）
+    if batch_confirm_id:
+        meta["batch_confirm_id"] = batch_confirm_id
+    if batch_confirm_size is not None:
+        meta["batch_confirm_size"] = batch_confirm_size
 
     return store.add(text, metadata=meta)
 
@@ -238,3 +296,140 @@ def decay_low_confidence(
     # 重载内存
     store._load_all()
     return count
+
+
+# ---- 隐性行为审计日志（熔炉#108 S2 + 规则#121）----
+# 行为信号不直接修改 confidence/importance。
+# 写入独立的 audit log，由独立 agent 周期性审查。
+
+BEHAVIORAL_SIGNALS = [
+    "user_closed_recommendation",    # 关闭推荐但未点差评
+    "user_bought_competitor",        # 购买竞品但未卸载
+    "user_skipped_suggestion",       # 跳过建议
+    "user_ignored_repeated",         # 3+ 次忽略同一类推荐
+    "user_corrected_output",         # 手动修正 Agent 输出
+    "user_undo_action",              # 撤销 Agent 刚执行的操作
+]
+
+
+def log_behavioral_signal(
+    store,
+    signal_type: str,
+    context_doc_ids: Optional[List[int]] = None,
+    note: Optional[str] = None,
+) -> bool:
+    """
+    写入隐性行为信号到 audit log.
+
+    ⚠️ 不修改任何 memory importance/confidence。
+    行为信号由独立审计 agent 周期性审查后决定是否调整信任权重。
+
+    Args:
+        store: VectorStore 实例
+        signal_type: 信号类型 (见 BEHAVIORAL_SIGNALS)
+        context_doc_ids: 相关文档 ID 列表（可选）
+        note: 附加说明
+    Returns:
+        True 如果写入成功
+    """
+    if signal_type not in BEHAVIORAL_SIGNALS:
+        return False
+
+    meta = {
+        "signal_type": signal_type,
+        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "_audit_log": 1,  # SQLite json_extract 兼容的整数标记
+    }
+    if context_doc_ids:
+        meta["context_doc_ids"] = context_doc_ids
+    if note:
+        meta["note"] = note
+
+    doc_id = store.add(
+        f"[BEHAVIORAL_AUDIT] {signal_type}",
+        metadata=meta,
+    )
+    return doc_id > 0
+
+
+def get_behavioral_signals(
+    store,
+    signal_type: Optional[str] = None,
+    hours_back: int = 24,
+) -> List[Dict[str, Any]]:
+    """
+    查询审计日志中的行为信号.
+
+    Args:
+        store: VectorStore 实例
+        signal_type: 按类型过滤，None 则返回全部
+        hours_back: 回溯时间（小时）
+    Returns:
+        行为信号字典列表 [{signal_type, logged_at, context_doc_ids, note}, ...]
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
+    results = []
+
+    with sqlite3.connect(store.db_path) as conn:
+        query = (
+            "SELECT id, text, metadata, created_at FROM documents "
+            "WHERE json_extract(metadata, '$._audit_log') = 1 "
+            "AND created_at > ? ORDER BY created_at DESC"
+        )
+        for row in conn.execute(query, (cutoff,)):
+            doc_id, text, meta_json, created = row
+            meta = _json.loads(meta_json) if meta_json else {}
+            st = meta.get("signal_type", "")
+            if signal_type and st != signal_type:
+                continue
+            results.append({
+                "id": doc_id,
+                "signal_type": st,
+                "logged_at": created,
+                "context_doc_ids": meta.get("context_doc_ids", []),
+                "note": meta.get("note", ""),
+                "raw": text,
+            })
+    return results
+
+
+def batch_tag_with_context(
+    store,
+    texts: List[str],
+    source: str = SOURCE_MODEL,
+    reviewed_by: Optional[str] = None,
+) -> Tuple[str, int, List[int]]:
+    """
+    批量添加文档并统一打上 batch_confirm_id.
+
+    熔炉#108 S2 落地：batch context 标注替代折扣。
+    每条记忆独立存储，但共享 batch_id 供下游 agent 自行判断。
+
+    Args:
+        store: VectorStore 实例
+        texts: 批量文本列表
+        source: 来源类型
+        reviewed_by: 确认者
+    Returns:
+        (batch_id, size, [doc_ids])
+    """
+    import uuid
+    batch_id = f"batch_{uuid.uuid4().hex[:8]}_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    size = len(texts)
+    if size == 0:
+        return "", 0, []
+    doc_ids = []
+    for text in texts:
+        doc_id = add_with_source(
+            store, text,
+            source=source,
+            reviewed_by=reviewed_by,
+            batch_confirm_id=batch_id,
+            batch_confirm_size=size,
+        )
+        doc_ids.append(doc_id)
+    return batch_id, size, doc_ids

@@ -291,7 +291,7 @@ class VectorStore:
           - hybrid: RRF fusion of dense + sparse
         """
         if self.mode == "sparse":
-            return self._search_sparse(query, top_k)
+            return self._search_sparse(query, top_k, filter)
         elif self.mode == "hybrid":
             return self._search_hybrid(query, top_k, threshold, filter, engine)
         else:
@@ -308,7 +308,13 @@ class VectorStore:
                 meta = _json_loads(meta_json)
                 if not all(meta.get(k) == v for k, v in filter.items()):
                     continue
-            score = float(np.dot(qvec, vec))
+            # Skip dimension-mismatched embeddings (e.g. from model migration)
+            if len(vec) != len(qvec):
+                continue
+            try:
+                score = float(np.dot(qvec, vec))
+            except ValueError:
+                continue
             if score >= threshold:
                 results.append(Document(
                     id=mid, text=text,
@@ -318,18 +324,26 @@ class VectorStore:
         results.sort(key=lambda d: d.score, reverse=True)
         return results[:top_k]
 
-    def _search_sparse(self, query, top_k):
-        raw = self._bm25.search(query, top_k)
+    def _search_sparse(self, query, top_k, filter=None):
+        # Fetch 3x candidates to allow room for post-filter trimming
+        fetch_k = top_k * 3 if filter else top_k
+        raw = self._bm25.search(query, fetch_k)
         results: List[Document] = []
         for doc_id_str, score in raw:
             did = int(doc_id_str)
             entry = self._entry_map.get(did)
             if entry:
+                meta = _json_loads(entry[2])
+                # Apply metadata filter (client-side, same as dense mode)
+                if filter and not all(meta.get(k) == v for k, v in filter.items()):
+                    continue
                 results.append(Document(
                     id=did, text=entry[1],
-                    metadata=_json_loads(entry[2]),
+                    metadata=meta,
                     score=round(score, 4),
                 ))
+                if len(results) >= top_k:
+                    break
         return results
 
     def _search_hybrid(self, query, top_k, threshold, filter, engine=None):

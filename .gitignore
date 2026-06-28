@@ -11,3 +11,7 @@ build/
 RELEASE_STRATEGY.md
 blog_*.md
 README_NEW.md
+.env
+.env.*
+*.key
+*.pem

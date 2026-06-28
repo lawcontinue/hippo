@@ -2,27 +2,33 @@
 
 `pip install hippo-llm` | Python 3.10+ | MIT
 
-在 ¥3800 的 GPU 上以 78 tok/s 跑 30B 模型。搜文档？不用装 ChromaDB，一个包全搞定。
+搜索你的文档。BM25 开箱即用，按需升级 Hybrid。不需要 ChromaDB。不需要云 API。不需要 jieba。一个 `pip install` 全搞定。
 
 [English](./README.md)
 
 ## 30 秒上手
 
-```bash
-hippo-pipeline serve --model qwen3-30b-a3b-q3 --mode standalone
-# → OpenAI 兼容 API，地址 localhost:8000/v1/chat/completions
+```python
+from hippo.embedding import VectorStore
+
+store = VectorStore("docs.db")  # 默认 sparse，BM25 即用
+
+store.add_batch([
+    {"text": "管道并行将模型层拆分到多台设备上"},
+    {"text": "BM25 处理精确关键词匹配"},
+    {"text": "混合搜索结合了关键词匹配和语义相似度"},
+])
+
+results = store.search("怎么跑大模型", top_k=5)
+for doc in results:
+    print(f"[{doc.score:.3f}] {doc.text}")
 ```
 
-```python
-import openai
-client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="none")
-r = client.chat.completions.create(
-    model="qwen3-30b-a3b-q3",
-    messages=[{"role": "user", "content": "解释一下流水线并行"}],
-    max_tokens=500
-)
-print(r.choices[0].message.content)
-```
+不需要向量数据库。不需要 embedding 模型下载。SQLite 持久化，开箱即用。
+
+> **→ 需要语义搜索？** `pip install hippo-llm[embedding]` 切换 `mode="hybrid"`，同一个 API，加了 dense 向量 + RRF 融合。
+
+**中文搜索友好**——内置分词器和停用词表，不需要 jieba，零配置。
 
 <details>
 <summary>双机部署</summary>
@@ -42,12 +48,12 @@ hippo-pipeline serve --model gemma-3-12b --mode pipeline --rank 1 \
 
 ## 一个包搞定推理 + 搜索
 
-搭 RAG 通常要装两个服务：Ollama 做推理 + ChromaDB 做向量。Hippo 一个 `pip install` 全给你。
+搭 RAG 通常要装两个服务：sentence-transformers 做向量 + ChromaDB 做向量库。Hippo 一个 `pip install` 全给你。
 
 ```python
 from hippo.embedding import EmbeddingEngine, VectorStore
 
-engine = EmbeddingEngine(model="nomic-embed-text")  # 调本地 Ollama
+engine = EmbeddingEngine(model="nomic-embed-text")  # 本地 sentence-transformers，无需外部服务
 store = VectorStore("docs.db", mode="hybrid")  # BM25 + 语义混合检索
 
 # 添加文档
@@ -132,7 +138,7 @@ print(response.choices[0].message.content)
 pip install hippo-llm
 ```
 
-需要：Python 3.10+、本地运行 [Ollama](https://ollama.ai)（用于模型权重和 embedding）。
+需要：Python 3.10+。语义搜索需要 `pip install hippo-llm[embedding]`（自动装 sentence-transformers）。无需 Ollama 或任何外部服务。
 
 ## 性能基准
 

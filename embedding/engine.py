@@ -21,10 +21,14 @@ __all__ = ["EmbeddingEngine", "blob_to_vector", "vector_to_blob"]
 
 # ---------- helpers ----------
 
-DEFAULT_MODEL = os.environ.get("HIPPO_EMBED_MODEL", "BAAI/bge-m3")
-# Local path override (e.g. E:/models/modelscope_cache/Xorbits/bge-m3 on Windows)
+DEFAULT_MODEL = os.environ.get("HIPPO_EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
+# Local path override (e.g. E:/models/modelscope_cache/Xorbits/bge-small-zh on Windows)
 LOCAL_MODEL_PATH = os.environ.get("HIPPO_EMBED_MODEL_PATH", "")
-DEFAULT_DIM = 1024
+DEFAULT_DIM = int(os.environ.get("HIPPO_EMBED_DIM", "512"))
+
+# Quality-first alternative (larger, slower, higher accuracy)
+# Set HIPPO_EMBED_MODEL=BAAI/bge-m3 and HIPPO_EMBED_DIM=1024 to use
+QUALITY_MODEL = "BAAI/bge-m3"
 
 
 def blob_to_vector(blob: bytes) -> np.ndarray:

@@ -12,8 +12,7 @@ Search your documents locally. BM25 works in 30 seconds, upgrade to hybrid when 
 No ChromaDB. No cloud API. No jieba. One `pip install`.
 
 <p align="center">
-  <img src="docs/demo_search.png" width="49%" alt="Hippo search demo">
-  <img src="docs/demo_serve.png" width="49%" alt="Hippo serving demo">
+  <img src="docs/demo_ui.png" width="80%" alt="Hippo search demo">
 </p>
 
 ## 30-second search
@@ -160,6 +159,27 @@ Split the model across machines. Plain TCP, no MPI. Mac + PC mixed.
 
 </details>
 
+## Acceleration Strategies
+
+Hippo includes a unified acceleration abstraction (`acceleration.py`) that auto-selects the best inference acceleration strategy for your hardware:
+
+| Strategy | Hardware | Description |
+|----------|----------|-------------|
+| **DFlash** | Apple Silicon (M-series) | KV injection via MLX, optimized for Mac Mini / MacBook |
+| **MTP** | NVIDIA GPU | vLLM-style speculative decoding with multi-token prediction |
+| **Pipeline** | Dual-machine (mixed) | Split model layers across 2+ machines via TCP (Mac + PC) |
+| **None** | Fallback | No acceleration, baseline inference |
+
+The `AccelerationOrchestrator` auto-detects your hardware and selects the best strategy — no manual configuration needed.
+
+```python
+from acceleration import AccelerationOrchestrator
+
+orchestrator = AccelerationOrchestrator()
+strategy = orchestrator.select(hardware="apple_silicon", language="chinese", task_type="chat")
+# → DFlashStrategy
+```
+
 ## What's inside
 
 | Feature | Details |
@@ -194,13 +214,59 @@ Zero dependencies beyond numpy. BM25 search works immediately.
 pip install hippo-llm[embedding]  # add dense vectors + hybrid RRF fusion
 ```
 
-Requirements: Python 3.10+. Dense embedding needs a local model (via [Ollama](https://ollama.ai) or sentence-transformers cache).
+Requirements: Python 3.10+. Dense embedding uses [sentence-transformers](https://github.com/UKPLab/sentence-transformers) (auto-installed with `pip install hippo-llm[embedding]`). No external services needed.
+
+### Configuration
+
+Hippo supports environment variables for embedding model customization:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HIPPO_EMBED_MODEL` | `BAAI/bge-small-zh-v1.5` | Model name (HuggingFace ID or local path) |
+| `HIPPO_EMBED_MODEL_PATH` | _(empty)_ | Override path to a local model directory (e.g. ModelScope cache). Takes priority over `HIPPO_EMBED_MODEL`. |
+| `HIPPO_EMBED_DIM` | `512` | Embedding dimension. Set to `1024` if using bge-m3. |
+
+**Speed vs Quality**:
+
+| Profile | Model | Size | Latency | Accuracy (OOD 110q) |
+|---------|-------|------|---------|---------------------|
+| **Default (speed)** | `BAAI/bge-small-zh-v1.5` | 183MB | ~5ms | 85.5% top-1 |
+| **Quality** | `BAAI/bge-m3` | 2.2GB | ~630ms | 92.7% top-1 |
+
+To use the quality-first model:
+```bash
+export HIPPO_EMBED_MODEL=BAAI/bge-m3
+export HIPPO_EMBED_DIM=1024
+```
+
+For offline / no-HuggingFace access, download the model locally (e.g. from [ModelScope](https://modelscope.cn)) and point to the directory:
+```bash
+export HIPPO_EMBED_MODEL_PATH=/path/to/bge-small-zh-v1.5
+```
+
+### Import paths: wheel vs source
+
+The `hippo-llm` wheel flattens packages to top-level. Use these imports:
+
+```python
+# Wheel install (pip install hippo-llm)
+from embedding.store import VectorStore
+from embedding.engine import EmbeddingEngine
+from embedding.memory_safety import add_with_source, search_with_confidence
+from hippo.safety_guard import SafetyGuard
+```
+
+If running from a source checkout (not wheel):
+```python
+# Source tree
+from hippo.embedding import VectorStore
+```
 
 ## Roadmap
 
 - **v0.3**: ANN index + Chinese tokenizer + hybrid RRF + sparse default ✅
 - **v0.4**: Built-in embedding models (bge-small-zh 5ms sweet spot), reranker, real-time routing (<10ms)
-- **v0.5**: Agent memory layer (embedding-backed episodic memory)
+- **v0.5**: Agent memory layer (embedding-backed episodic memory) — [Design Doc](docs/V05_AGENT_MEMORY_DESIGN.md)
 - **v0.6**: Multi-shard support (>2 devices), speculative decoding
 
 ## Benchmarks

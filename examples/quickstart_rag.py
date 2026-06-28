@@ -2,7 +2,7 @@
 Quick start: RAG with local LLM + Hippo search.
 
 Prerequisites:
-    1. Start Ollama with a model: ollama pull qwen3:4b
+    1. Start a local LLM server (e.g. hippo-pipeline serve)
     2. Start Hippo server: hippo-pipeline serve --model qwen3-4b-q4 --mode standalone
     3. Run this script: python3 examples/quickstart_rag.py
 """

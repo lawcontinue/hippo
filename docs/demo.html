@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hippo · Local Search</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #1e1e1e;
+    --text: #e5e5e5;
+    --dim: #666;
+    --accent: #b7a56b;
+    --score: #4a9eff;
+    --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    --sans: -apple-system, 'Inter', 'Segoe UI', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 60px 20px;
+  }
+  .container { max-width: 720px; width: 100%; }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 48px; }
+  .logo {
+    font-size: 14px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; margin-bottom: 8px;
+  }
+  .tagline { font-size: 13px; color: var(--dim); }
+
+  /* Search Bar */
+  .search-wrap { position: relative; margin-bottom: 16px; }
+  .search-input {
+    width: 100%; padding: 16px 20px 16px 48px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; color: var(--text); font-size: 15px;
+    font-family: var(--sans); outline: none; transition: border-color 0.2s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .search-input::placeholder { color: var(--dim); }
+  .search-icon {
+    position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
+    color: var(--dim); font-size: 16px;
+  }
+
+  /* Mode Badge */
+  .mode-bar {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 32px; font-size: 12px; color: var(--dim);
+  }
+  .badge {
+    padding: 3px 10px; border-radius: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px;
+  }
+  .badge-active { color: var(--accent); border-color: var(--accent); }
+  .latency { font-family: var(--mono); }
+
+  /* Results */
+  .results { display: flex; flex-direction: column; gap: 8px; }
+  .result {
+    padding: 20px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px;
+    transition: border-color 0.15s;
+  }
+  .result:hover { border-color: #333; }
+  .result-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .score {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--score);
+    padding: 2px 8px; background: rgba(74, 158, 255, 0.08);
+    border-radius: 4px;
+  }
+  .rank { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .text {
+    font-size: 14px; line-height: 1.6; color: #ccc;
+  }
+  .text mark {
+    background: rgba(183, 165, 107, 0.15); color: var(--accent);
+    padding: 1px 3px; border-radius: 2px;
+  }
+  .meta {
+    margin-top: 10px; font-size: 11px; color: var(--dim);
+    font-family: var(--mono);
+  }
+
+  /* Stats Bar */
+  .stats {
+    display: flex; gap: 24px; justify-content: center;
+    margin-top: 40px; padding-top: 32px;
+    border-top: 1px solid var(--border);
+  }
+  .stat { text-align: center; }
+  .stat-value {
+    font-family: var(--mono); font-size: 22px; font-weight: 600;
+    color: var(--text);
+  }
+  .stat-label {
+    font-size: 11px; color: var(--dim); margin-top: 4px;
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .stat-accent { color: var(--accent); }
+
+  /* Code footer */
+  .code-footer {
+    margin-top: 48px; text-align: center;
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+  }
+  .code-footer span { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <div class="logo">🦛 Hippo</div>
+    <div class="tagline">Local search · zero dependencies · 91.8% accuracy</div>
+  </div>
+
+  <!-- Search Bar -->
+  <div class="search-wrap">
+    <span class="search-icon">⌕</span>
+    <input class="search-input" type="text" value="怎么在低端设备上跑大模型" placeholder="Search documents..." />
+  </div>
+
+  <!-- Mode -->
+  <div class="mode-bar">
+    <span class="badge badge-active">hybrid</span>
+    <span class="badge">BM25 + dense</span>
+    <span class="badge">RRF fusion</span>
+    <span style="margin-left:auto" class="latency">0.8ms</span>
+  </div>
+
+  <!-- Results -->
+  <div class="results">
+    <div class="result">
+      <div class="result-header">
+        <span class="rank">#1</span>
+        <span class="score">0.892</span>
+      </div>
+      <div class="text">流水线并行将模型层拆分到多台设备上，每台设备只加载自己的分片，<mark>低端设备</mark>也能<mark>跑大模型</mark>。普通 TCP 通信，不需要 MPI。</div>
+      <div class="meta">source: README.md · BM25: 0.91 · dense: 0.87</div>
+    </div>
+
+    <div class="result">
+      <div class="result-header">
+        <span class="rank">#2</span>
+        <span class="score">0.741</span>
+      </div>
+      <div class="text">BM25 处理精确关键词匹配，dense 向量补充语义相似度。RRF 融合两者，<mark>互补性强</mark>——各独有 42 条正确。</div>
+      <div class="meta">source: benchmarks.md · BM25: 0.82 · dense: 0.66</div>
+    </div>
+
+    <div class="result">
+      <div class="result-header">
+        <span class="rank">#3</span>
+        <span class="score">0.618</span>
+      </div>
+      <div class="text">Hippo 使用 SQLite 存储文档和向量，不需要 ChromaDB。<mark>零外部服务依赖</mark>，pip install 直接运行。</div>
+      <div class="meta">source: README.md · BM25: 0.45 · dense: 0.78</div>
+    </div>
+
+    <div class="result">
+      <div class="result-header">
+        <span class="rank">#4</span>
+        <span class="score">0.534</span>
+      </div>
+      <div class="text">投机解码（Speculative Decoding）可以把推理延迟降低 2-3 倍，适合实时交互场景。</div>
+      <div class="meta">source: benchmarks.md · BM25: 0.12 · dense: 0.95</div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value stat-accent">&lt;1ms</div>
+      <div class="stat-label">BM25 Query</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">5ms</div>
+      <div class="stat-label">Dense Search</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value stat-accent">91.8%</div>
+      <div class="stat-label">OOD Top-1</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">112</div>
+      <div class="stat-label">Tests</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="code-footer">
+    pip install <span>hippo-llm</span>
+  </div>
+</div>
+
+</body>
+</html>

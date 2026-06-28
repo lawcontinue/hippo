@@ -2,13 +2,13 @@
 Quick start: Hippo embedding + hybrid search in 30 seconds.
 
 Usage:
-    # Start Ollama first, then:
+    # Start a local embedding model first, then:
     python3 examples/quickstart_search.py
 """
 
 from hippo.embedding import EmbeddingEngine, VectorStore
 
-# 1. Setup (uses local Ollama for embeddings)
+# 1. Setup (uses local sentence-transformers for embeddings)
 engine = EmbeddingEngine(model="nomic-embed-text")
 store = VectorStore("quickstart.db", mode="hybrid")  # BM25 + dense RRF fusion
 

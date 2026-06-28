@@ -49,7 +49,10 @@ dev = [
     "httpx>=0.24",
     "ruff>=0.1.0",
 ]
-all = ["hippo-llm[embedding,api,web]"]
+eval = [
+    "scipy>=1.10",
+]
+all = ["hippo-llm[embedding,api,web,eval]"]
 
 [project.urls]
 Homepage = "https://github.com/lawcontinue/hippo"
@@ -58,6 +61,7 @@ Issues = "https://github.com/lawcontinue/hippo/issues"
 
 [tool.setuptools.packages.find]
 include = ["pipeline*", "embedding*", "hippo*"]
+# hippo* covers hippo/eval/ subpackage
 exclude = ["_archived*", "tests*", "scripts*"]
 
 [tool.ruff]

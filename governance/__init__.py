@@ -25,16 +25,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+
+# ---- R1: stake gate ----
+# 复用 memory_safety 的 StakeLevel 和 get_stake,避免重复定义
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# ---- R1: stake gate ----
-
-# 复用 memory_safety 的 StakeLevel 和 get_stake,避免重复定义
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "embedding"))
 from memory_safety import StakeLevel  # noqa: E402
 

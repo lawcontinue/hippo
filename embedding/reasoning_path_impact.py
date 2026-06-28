@@ -35,11 +35,10 @@ RPIA 四要素（卡193）:
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
-import json
-import statistics
+from typing import List, Optional
 
 
 class ReasoningDepth(Enum):

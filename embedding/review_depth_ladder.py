@@ -8,9 +8,9 @@ Python 3.14 compat: no @property inside Enum.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import IntEnum
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
 
 
 class ReviewLevel(IntEnum):
@@ -92,9 +92,6 @@ class ReviewRecord:
         if self.level_used < min_level:
             return False
         return self.level_used != ReviewLevel.L0_SIGN_ONLY
-
-    def is_form_compliance_only(self) -> bool:
-        return self.level_used.value <= 1
 
     def is_form_compliance_only(self) -> bool:
         return self.level_used.value <= 1

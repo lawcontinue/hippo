@@ -6,10 +6,12 @@ Modules:
   drift:   Distribution drift detection (KL/JS divergence).
   matrix:  Multi-dimensional metric matrix (5 dimensions, Goodhart analysis).
   chaos:   Fault injection framework for chaos engineering.
+  reward:  Deterministic reward rule evaluator (sparsity, conflict, Goodhart).
   harness: Unified CLI integrating all modules.
 """
 
 from .chaos import FaultInjector, FaultType, InjectionStrategy, RecoveryEvaluator
+from .curation import CurationItem, CurationResult, CurationRule, DataCurator
 from .drift import DriftDetector, DriftResult, DriftSeverity
 from .fusion import (
     ChallengeLog,
@@ -30,6 +32,13 @@ from .matrix import (
 )
 from .matrix import (
     format_report as format_matrix_report,
+)
+from .reward import (
+    RewardConfig,
+    RewardDimension,
+    RewardEvaluation,
+    RewardEvaluator,
+    RewardSignal,
 )
 
 __all__ = [
@@ -53,6 +62,17 @@ __all__ = [
     "MatrixReport",
     "TaskResult",
     "format_matrix_report",
+    # reward
+    "RewardEvaluator",
+    "RewardSignal",
+    "RewardEvaluation",
+    "RewardConfig",
+    "RewardDimension",
+    # curation
+    "DataCurator",
+    "CurationItem",
+    "CurationResult",
+    "CurationRule",
     # chaos
     "FaultInjector",
     "FaultType",

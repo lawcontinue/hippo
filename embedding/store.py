@@ -13,8 +13,10 @@ Optional: sentence-transformers (for dense/hybrid modes)
 from __future__ import annotations
 
 import json as _json
+import logging
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -22,6 +24,8 @@ import numpy as np
 
 from .bm25 import BM25Index
 from .tokenizer import default_tokenizer
+
+_log = logging.getLogger(__name__)
 
 __all__ = ["VectorStore", "Document"]
 
@@ -84,7 +88,23 @@ class VectorStore:
         # connection (rather than opening/closing per call) avoids Windows
         # WinError 32 during temp-dir cleanup: short-lived connections were only
         # released by GC, racing with TemporaryDirectory.__exit__.
-        self._conn: Optional[sqlite3.Connection] = sqlite3.connect(self.db_path)
+        #
+        # check_same_thread=False: we serialize write access with self._lock
+        # below. SQLite itself is thread-safe in serialized mode (the default);
+        # the check_same_thread flag only guards Python-level thread affinity,
+        # not data integrity. This lets VectorStore be safely shared across
+        # worker threads, matching the behavior of the previous short-lived
+        # connection model (each add() opened its own connection in its caller
+        # thread).
+        self._conn: Optional[sqlite3.Connection] = sqlite3.connect(
+            self.db_path, check_same_thread=False
+        )
+        # Guards every write path so concurrent add()/delete()/update() calls
+        # from multiple threads serialize at the Python level. Reads are not
+        # locked because SQLite's MVCC + serialized isolation handles them
+        # safely; only writes need explicit coordination since the Python-side
+        # _entries list and _entry_map must stay in sync with the DB.
+        self._lock = threading.Lock()
         self._init_db()
         self._load_all()
 
@@ -117,6 +137,29 @@ class VectorStore:
             self._engine = _get_engine(self._engine_arg)
         return self._engine
 
+    def _check_open(self) -> None:
+        """Raise if the store has been closed.
+
+        All public SQL-touching methods call this first so that post-close
+        usage fails loudly with a clear error instead of the obscure
+        ``AttributeError: 'NoneType' object has no attribute 'execute'``.
+        """
+        if self._conn is None:
+            raise RuntimeError(
+                "VectorStore is closed; create a new instance to keep using it"
+            )
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Run a parameterized SQL statement against the store's connection.
+
+        Provided so external modules (e.g. ``memory_safety``) can execute SQL
+        without reaching into the private ``_conn`` attribute. The caller is
+        responsible for ``commit()`` if the statement mutates state, and for
+        honoring the store's ``_lock`` when writing.
+        """
+        self._check_open()
+        return self._conn.execute(sql, params)
+
     def close(self) -> None:
         """Close the underlying SQLite connection.
 
@@ -130,14 +173,20 @@ class VectorStore:
         if conn is not None:
             try:
                 conn.close()
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as e:
+                # Don't swallow silently — surface to logs so the caller can
+                # investigate if cleanup is unexpectedly failing (e.g. db
+                # already closed by another path).
+                _log.warning("VectorStore.close(): sqlite close failed: %s", e)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+        # Return False (or None) so any exception raised inside the `with`
+        # block is propagated to the caller — close() must not silently mask
+        # errors. Returning True would swallow the exception; do not change.
         return False
 
     # ---- internal ----
@@ -218,6 +267,7 @@ class VectorStore:
 
     def add(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> int:
         """Add a document and return its ID."""
+        self._check_open()
         metadata = metadata or {}
         meta_json = _json_dumps(metadata)
 
@@ -225,23 +275,23 @@ class VectorStore:
             _, vector_to_blob = _get_blob_helpers()
             vec = self.engine.embed(text)
             blob = vector_to_blob(vec)
-            conn = self._conn
-            cur = conn.execute(
-                "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
-                (text, meta_json, blob),
-            )
-            conn.commit()
-            doc_id = cur.lastrowid
-            self._entries.append((doc_id, text, meta_json, vec))
+            with self._lock:
+                cur = self._conn.execute(
+                    "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
+                    (text, meta_json, blob),
+                )
+                self._conn.commit()
+                doc_id = cur.lastrowid
+                self._entries.append((doc_id, text, meta_json, vec))
         else:
-            conn = self._conn
-            cur = conn.execute(
-                "INSERT INTO documents (text, metadata) VALUES (?, ?)",
-                (text, meta_json),
-            )
-            conn.commit()
-            doc_id = cur.lastrowid
-            self._entries.append((doc_id, text, meta_json, None))
+            with self._lock:
+                cur = self._conn.execute(
+                    "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                    (text, meta_json),
+                )
+                self._conn.commit()
+                doc_id = cur.lastrowid
+                self._entries.append((doc_id, text, meta_json, None))
 
         self._entry_map[doc_id] = self._entries[-1]
         if self._bm25 is not None:
@@ -255,6 +305,7 @@ class VectorStore:
           - list of dicts: [{"text": "...", "metadata": {...}}, ...]
           - list of tuples: [("text", metadata_dict), ...]
         """
+        self._check_open()
         # Normalize to (text, metadata) tuples
         normalized = []
         for item in items:
@@ -275,32 +326,32 @@ class VectorStore:
             eng = engine or self.engine
             texts = [t for t, _ in normalized]
             vecs = eng.embed_batch(texts)
-            conn = self._conn
-            for i, (text, meta) in enumerate(normalized):
-                meta_json = _json_dumps(meta or {})
-                blob = vector_to_blob(vecs[i])
-                cur = conn.execute(
-                    "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
-                    (text, meta_json, blob),
-                )
-                doc_id = cur.lastrowid
-                ids.append(doc_id)
-                self._entries.append((doc_id, text, meta_json, vecs[i]))
-                self._entry_map[doc_id] = self._entries[-1]
-            conn.commit()
+            with self._lock:
+                for i, (text, meta) in enumerate(normalized):
+                    meta_json = _json_dumps(meta or {})
+                    blob = vector_to_blob(vecs[i])
+                    cur = self._conn.execute(
+                        "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
+                        (text, meta_json, blob),
+                    )
+                    doc_id = cur.lastrowid
+                    ids.append(doc_id)
+                    self._entries.append((doc_id, text, meta_json, vecs[i]))
+                    self._entry_map[doc_id] = self._entries[-1]
+                self._conn.commit()
         else:
-            conn = self._conn
-            for text, meta in normalized:
-                meta_json = _json_dumps(meta or {})
-                cur = conn.execute(
-                    "INSERT INTO documents (text, metadata) VALUES (?, ?)",
-                    (text, meta_json),
-                )
-                doc_id = cur.lastrowid
-                ids.append(doc_id)
-                self._entries.append((doc_id, text, meta_json, None))
-                self._entry_map[doc_id] = self._entries[-1]
-            conn.commit()
+            with self._lock:
+                for text, meta in normalized:
+                    meta_json = _json_dumps(meta or {})
+                    cur = self._conn.execute(
+                        "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                        (text, meta_json),
+                    )
+                    doc_id = cur.lastrowid
+                    ids.append(doc_id)
+                    self._entries.append((doc_id, text, meta_json, None))
+                    self._entry_map[doc_id] = self._entries[-1]
+                self._conn.commit()
 
         # BM25 index
         if self._bm25 is not None:
@@ -323,6 +374,7 @@ class VectorStore:
           - dense: cosine similarity
           - hybrid: RRF fusion of dense + sparse
         """
+        self._check_open()
         if self.mode == "sparse":
             return self._search_sparse(query, top_k, filter)
         elif self.mode == "hybrid":
@@ -394,27 +446,29 @@ class VectorStore:
 
     def update_metadata(self, doc_id: int, metadata: Dict[str, Any]) -> bool:
         """更新文档 metadata（公开接口，供 memory_safety 使用）"""
+        self._check_open()
         entry = self._entry_map.get(doc_id)
         if not entry:
             return False
         meta_json = _json_dumps(metadata)
-        conn = self._conn
-        conn.execute("UPDATE documents SET metadata = ? WHERE id = ?", (meta_json, doc_id))
-        conn.commit()
-        # 更新内存
-        self._entry_map[doc_id] = (entry[0], entry[1], meta_json, entry[3])
-        for i, e in enumerate(self._entries):
-            if e[0] == doc_id:
-                self._entries[i] = (entry[0], entry[1], meta_json, entry[3])
-                break
+        with self._lock:
+            self._conn.execute("UPDATE documents SET metadata = ? WHERE id = ?", (meta_json, doc_id))
+            self._conn.commit()
+            # 更新内存（必须在锁内，避免与并发 add 竞态）
+            self._entry_map[doc_id] = (entry[0], entry[1], meta_json, entry[3])
+            for i, e in enumerate(self._entries):
+                if e[0] == doc_id:
+                    self._entries[i] = (entry[0], entry[1], meta_json, entry[3])
+                    break
         return True
 
     def delete(self, doc_id: int) -> bool:
-        conn = self._conn
-        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-        conn.commit()
-        self._entries = [e for e in self._entries if e[0] != doc_id]
-        self._entry_map.pop(doc_id, None)
+        self._check_open()
+        with self._lock:
+            self._conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+            self._conn.commit()
+            self._entries = [e for e in self._entries if e[0] != doc_id]
+            self._entry_map.pop(doc_id, None)
         if self._bm25 is not None:
             self._bm25.delete(str(doc_id))
         return True
@@ -436,6 +490,7 @@ class VectorStore:
 
         Returns the number of documents re-embedded.
         """
+        self._check_open()
         if not self._use_embedding:
             raise ValueError("rebuild_embeddings() requires dense or hybrid mode")
 
@@ -450,14 +505,13 @@ class VectorStore:
         texts = [t for _, t in to_embed]
         vecs = eng.embed_batch(texts)
 
-        conn = self._conn
-        for i, (mid, _) in enumerate(to_embed):
-            blob = vector_to_blob(vecs[i])
-            conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (blob, mid))
-        conn.commit()
-
-        # Reload
-        self._load_all()
+        with self._lock:
+            for i, (mid, _) in enumerate(to_embed):
+                blob = vector_to_blob(vecs[i])
+                self._conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (blob, mid))
+            self._conn.commit()
+            # Reload within lock so concurrent add() can't observe a half-updated state
+            self._load_all()
         return len(to_embed)
 
 

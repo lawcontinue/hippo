@@ -125,34 +125,34 @@ def _make_store(mode="dense", tmp=None):
 
 def test_store_dense_mode():
     with tempfile.TemporaryDirectory() as d:
-        store = _make_store("dense", os.path.join(d, "test.db"))
-        store.add("hello world", {"tag": "greeting"})
-        store.add("python programming", {"tag": "tech"})
-        results = store.search("hello", top_k=2)
-        assert len(results) >= 1
-        assert results[0].text == "hello world"
+        with _make_store("dense", os.path.join(d, "test.db")) as store:
+            store.add("hello world", {"tag": "greeting"})
+            store.add("python programming", {"tag": "tech"})
+            results = store.search("hello", top_k=2)
+            assert len(results) >= 1
+            assert results[0].text == "hello world"
 
 
 def test_store_sparse_mode():
     with tempfile.TemporaryDirectory() as d:
-        store = _make_store("sparse", os.path.join(d, "test.db"))
-        store.add("machine learning algorithms")
-        store.add("cooking recipes")
-        results = store.search("machine", top_k=2)
-        assert len(results) >= 1
-        assert "machine" in results[0].text
+        with _make_store("sparse", os.path.join(d, "test.db")) as store:
+            store.add("machine learning algorithms")
+            store.add("cooking recipes")
+            results = store.search("machine", top_k=2)
+            assert len(results) >= 1
+            assert "machine" in results[0].text
 
 
 def test_store_hybrid_mode():
     with tempfile.TemporaryDirectory() as d:
-        store = _make_store("hybrid", os.path.join(d, "test.db"))
-        store.add("machine learning algorithms")
-        store.add("cooking recipes dinner")
-        results = store.search("machine learning", top_k=2)
-        assert len(results) >= 1
-        # hybrid should find the ML doc
-        ids = [r.id for r in results]
-        assert any("machine" in r.text for r in results)
+        with _make_store("hybrid", os.path.join(d, "test.db")) as store:
+            store.add("machine learning algorithms")
+            store.add("cooking recipes dinner")
+            results = store.search("machine learning", top_k=2)
+            assert len(results) >= 1
+            # hybrid should find the ML doc
+            ids = [r.id for r in results]
+            assert any("machine" in r.text for r in results)
 
 
 # ---- ANN tests ----
@@ -206,14 +206,14 @@ def test_import_csv():
             w.writerow(["hello world", "alice"])
             w.writerow(["python code", "bob"])
 
-        store = _make_store("dense", os.path.join(d, "test.db"))
-        ids = import_csv(store, csv_path, text_col="text", meta_cols=["author"])
-        assert len(ids) == 2
-        assert store.count() == 2
-        # P1-5: verify metadata content via search
-        results = store.search("hello", top_k=2)
-        alice_found = any(r.metadata.get("author") == "alice" for r in results)
-        assert alice_found
+        with _make_store("dense", os.path.join(d, "test.db")) as store:
+            ids = import_csv(store, csv_path, text_col="text", meta_cols=["author"])
+            assert len(ids) == 2
+            assert store.count() == 2
+            # P1-5: verify metadata content via search
+            results = store.search("hello", top_k=2)
+            alice_found = any(r.metadata.get("author") == "alice" for r in results)
+            assert alice_found
 
 
 def test_import_json():
@@ -226,14 +226,14 @@ def test_import_json():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(records, f)
 
-        store = _make_store("dense", os.path.join(d, "test.db"))
-        ids = import_json(store, json_path, text_key="content", meta_key="info")
-        assert len(ids) == 2
-        assert store.count() == 2
-        # P1-5: verify metadata content via search
-        results = store.search("hello", top_k=2)
-        alice_found = any(r.metadata.get("author") == "alice" for r in results)
-        assert alice_found
+        with _make_store("dense", os.path.join(d, "test.db")) as store:
+            ids = import_json(store, json_path, text_key="content", meta_key="info")
+            assert len(ids) == 2
+            assert store.count() == 2
+            # P1-5: verify metadata content via search
+            results = store.search("hello", top_k=2)
+            alice_found = any(r.metadata.get("author") == "alice" for r in results)
+            assert alice_found
 
 
 # ---- Engine tests ----

@@ -255,45 +255,47 @@ def decay_low_confidence(
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
     count = 0
 
-    conn = store._conn
-    for row in conn.execute(
-        "SELECT id, metadata, created_at FROM documents WHERE created_at < ?",
-        (cutoff,),
-    ):
-        doc_id, meta_json, created = row
-        meta = _json.loads(meta_json) if meta_json else {}
-        confidence = meta.get("confidence", 0.5)
-        source = meta.get("source", SOURCE_MODEL)
+    # Use store.execute() public API rather than reaching into store._conn —
+    # keeps memory_safety decoupled from VectorStore internals and gets
+    # _check_open() for free (loud error after close instead of AttributeError).
+    with store._lock:
+        for row in store.execute(
+            "SELECT id, metadata, created_at FROM documents WHERE created_at < ?",
+            (cutoff,),
+        ):
+            doc_id, meta_json, created = row
+            meta = _json.loads(meta_json) if meta_json else {}
+            confidence = meta.get("confidence", 0.5)
+            source = meta.get("source", SOURCE_MODEL)
 
-        # system 和 verified 不衰减
-        if source in (SOURCE_SYSTEM, SOURCE_VERIFIED, SOURCE_USER):
-            continue
-        if confidence >= threshold:
-            continue
+            # system 和 verified 不衰减
+            if source in (SOURCE_SYSTEM, SOURCE_VERIFIED, SOURCE_USER):
+                continue
+            if confidence >= threshold:
+                continue
 
-        # P1-4 修复：幂等保护，24h 内只衰减一次
-        last_decayed = meta.get("last_decayed")
-        if last_decayed:
-            try:
-                last_dt = datetime.fromisoformat(last_decayed)
-                if datetime.now(timezone.utc) - last_dt < timedelta(days=1):
-                    continue  # 今天已经衰减过
-            except (ValueError, TypeError):
-                pass
+            # P1-4 修复：幂等保护，24h 内只衰减一次
+            last_decayed = meta.get("last_decayed")
+            if last_decayed:
+                try:
+                    last_dt = datetime.fromisoformat(last_decayed)
+                    if datetime.now(timezone.utc) - last_dt < timedelta(days=1):
+                        continue  # 今天已经衰减过
+                except (ValueError, TypeError):
+                    pass
 
-        # 衰减：confidence *= 0.9
-        new_conf = confidence * 0.9
-        meta["confidence"] = round(new_conf, 4)
-        meta["last_decayed"] = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "UPDATE documents SET metadata = ? WHERE id = ?",
-            (_json.dumps(meta, ensure_ascii=False), doc_id),
-        )
-        count += 1
-    conn.commit()
-
-    # 重载内存
-    store._load_all()
+            # 衰减：confidence *= 0.9
+            new_conf = confidence * 0.9
+            meta["confidence"] = round(new_conf, 4)
+            meta["last_decayed"] = datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE documents SET metadata = ? WHERE id = ?",
+                (_json.dumps(meta, ensure_ascii=False), doc_id),
+            )
+            count += 1
+        store._conn.commit()
+        # Reload within lock so concurrent add() can't observe a half-updated state
+        store._load_all()
     return count
 
 
@@ -372,13 +374,13 @@ def get_behavioral_signals(
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
     results = []
 
-    conn = store._conn
+    # Read-only path — safe to use public execute() without the write lock
     query = (
         "SELECT id, text, metadata, created_at FROM documents "
         "WHERE json_extract(metadata, '$._audit_log') = 1 "
         "AND created_at > ? ORDER BY created_at DESC"
     )
-    for row in conn.execute(query, (cutoff,)):
+    for row in store.execute(query, (cutoff,)):
         doc_id, text, meta_json, created = row
         meta = _json.loads(meta_json) if meta_json else {}
         st = meta.get("signal_type", "")

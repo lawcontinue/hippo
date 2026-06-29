@@ -250,14 +250,16 @@ def decay_low_confidence(
     衰减的文档数量
     """
     import json as _json
-    import sqlite3
     from datetime import datetime, timedelta
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
     count = 0
 
-    with sqlite3.connect(store.db_path) as conn:
-        for row in conn.execute(
+    # Use store.execute() public API rather than reaching into store._conn —
+    # keeps memory_safety decoupled from VectorStore internals and gets
+    # _check_open() for free (loud error after close instead of AttributeError).
+    with store._lock:
+        for row in store.execute(
             "SELECT id, metadata, created_at FROM documents WHERE created_at < ?",
             (cutoff,),
         ):
@@ -276,7 +278,6 @@ def decay_low_confidence(
             last_decayed = meta.get("last_decayed")
             if last_decayed:
                 try:
-                    from datetime import timedelta
                     last_dt = datetime.fromisoformat(last_decayed)
                     if datetime.now(timezone.utc) - last_dt < timedelta(days=1):
                         continue  # 今天已经衰减过
@@ -287,14 +288,14 @@ def decay_low_confidence(
             new_conf = confidence * 0.9
             meta["confidence"] = round(new_conf, 4)
             meta["last_decayed"] = datetime.now(timezone.utc).isoformat()
-            conn.execute(
+            store.execute(
                 "UPDATE documents SET metadata = ? WHERE id = ?",
                 (_json.dumps(meta, ensure_ascii=False), doc_id),
             )
             count += 1
-
-    # 重载内存
-    store._load_all()
+        store._conn.commit()
+        # Reload within lock so concurrent add() can't observe a half-updated state
+        store._load_all()
     return count
 
 
@@ -368,32 +369,31 @@ def get_behavioral_signals(
         行为信号字典列表 [{signal_type, logged_at, context_doc_ids, note}, ...]
     """
     import json as _json
-    import sqlite3
     from datetime import datetime, timedelta
 
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
     results = []
 
-    with sqlite3.connect(store.db_path) as conn:
-        query = (
-            "SELECT id, text, metadata, created_at FROM documents "
-            "WHERE json_extract(metadata, '$._audit_log') = 1 "
-            "AND created_at > ? ORDER BY created_at DESC"
-        )
-        for row in conn.execute(query, (cutoff,)):
-            doc_id, text, meta_json, created = row
-            meta = _json.loads(meta_json) if meta_json else {}
-            st = meta.get("signal_type", "")
-            if signal_type and st != signal_type:
-                continue
-            results.append({
-                "id": doc_id,
-                "signal_type": st,
-                "logged_at": created,
-                "context_doc_ids": meta.get("context_doc_ids", []),
-                "note": meta.get("note", ""),
-                "raw": text,
-            })
+    # Read-only path — safe to use public execute() without the write lock
+    query = (
+        "SELECT id, text, metadata, created_at FROM documents "
+        "WHERE json_extract(metadata, '$._audit_log') = 1 "
+        "AND created_at > ? ORDER BY created_at DESC"
+    )
+    for row in store.execute(query, (cutoff,)):
+        doc_id, text, meta_json, created = row
+        meta = _json.loads(meta_json) if meta_json else {}
+        st = meta.get("signal_type", "")
+        if signal_type and st != signal_type:
+            continue
+        results.append({
+            "id": doc_id,
+            "signal_type": st,
+            "logged_at": created,
+            "context_doc_ids": meta.get("context_doc_ids", []),
+            "note": meta.get("note", ""),
+            "raw": text,
+        })
     return results
 
 

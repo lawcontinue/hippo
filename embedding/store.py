@@ -80,6 +80,11 @@ class VectorStore:
         # For sparse mode, no embedding column needed
         self._use_embedding = mode != "sparse"
 
+        # Persistent connection reused across operations. Holding one long-lived
+        # connection (rather than opening/closing per call) avoids Windows
+        # WinError 32 during temp-dir cleanup: short-lived connections were only
+        # released by GC, racing with TemporaryDirectory.__exit__.
+        self._conn: Optional[sqlite3.Connection] = sqlite3.connect(self.db_path)
         self._init_db()
         self._load_all()
 
@@ -112,51 +117,75 @@ class VectorStore:
             self._engine = _get_engine(self._engine_arg)
         return self._engine
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection.
+
+        Call this (or use ``with VectorStore(...) as store:``) when you are done
+        with the store — especially on Windows, where an open connection keeps a
+        file lock on the .db and prevents the file (or its temp directory) from
+        being deleted.
+        """
+        conn = self._conn
+        self._conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
     # ---- internal ----
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            if self._use_embedding:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS documents (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        text TEXT NOT NULL,
-                        metadata TEXT NOT NULL DEFAULT '{}',
-                        embedding BLOB,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-            else:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS documents (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        text TEXT NOT NULL,
-                        metadata TEXT NOT NULL DEFAULT '{}',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
+        conn = self._conn
+        if self._use_embedding:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    embedding BLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        else:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-            # Migration: sparse→dense/hybrid upgrade — add embedding column if missing
-            if self._use_embedding:
-                cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
-                if 'embedding' not in cols:
-                    conn.execute("ALTER TABLE documents ADD COLUMN embedding BLOB")
+        # Migration: sparse→dense/hybrid upgrade — add embedding column if missing
+        if self._use_embedding:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+            if 'embedding' not in cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN embedding BLOB")
+        conn.commit()
 
     def _load_all(self):
         self._entries.clear()
         blob_to_vector, _ = _get_blob_helpers() if self._use_embedding else (None, None)
-        with sqlite3.connect(self.db_path) as conn:
-            if self._use_embedding:
-                for row in conn.execute("SELECT id, text, metadata, embedding FROM documents"):
-                    mid, text, meta_json, blob = row
-                    vec = blob_to_vector(blob) if blob else None
-                    self._entries.append((mid, text, meta_json, vec))
-                    self._entry_map[mid] = self._entries[-1]
-            else:
-                for row in conn.execute("SELECT id, text, metadata FROM documents"):
-                    mid, text, meta_json = row
-                    self._entries.append((mid, text, meta_json, None))
-                    self._entry_map[mid] = self._entries[-1]
+        conn = self._conn
+        if self._use_embedding:
+            for row in conn.execute("SELECT id, text, metadata, embedding FROM documents"):
+                mid, text, meta_json, blob = row
+                vec = blob_to_vector(blob) if blob else None
+                self._entries.append((mid, text, meta_json, vec))
+                self._entry_map[mid] = self._entries[-1]
+        else:
+            for row in conn.execute("SELECT id, text, metadata FROM documents"):
+                mid, text, meta_json = row
+                self._entries.append((mid, text, meta_json, None))
+                self._entry_map[mid] = self._entries[-1]
 
     def _rrf_fuse(self, dense_results: List[Document], sparse_results: List[tuple],
                   k: int = 60, dense_weight: float = 1.0, sparse_weight: float = 1.0) -> List[Document]:
@@ -196,20 +225,22 @@ class VectorStore:
             _, vector_to_blob = _get_blob_helpers()
             vec = self.engine.embed(text)
             blob = vector_to_blob(vec)
-            with sqlite3.connect(self.db_path) as conn:
-                cur = conn.execute(
-                    "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
-                    (text, meta_json, blob),
-                )
-                doc_id = cur.lastrowid
+            conn = self._conn
+            cur = conn.execute(
+                "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
+                (text, meta_json, blob),
+            )
+            conn.commit()
+            doc_id = cur.lastrowid
             self._entries.append((doc_id, text, meta_json, vec))
         else:
-            with sqlite3.connect(self.db_path) as conn:
-                cur = conn.execute(
-                    "INSERT INTO documents (text, metadata) VALUES (?, ?)",
-                    (text, meta_json),
-                )
-                doc_id = cur.lastrowid
+            conn = self._conn
+            cur = conn.execute(
+                "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                (text, meta_json),
+            )
+            conn.commit()
+            doc_id = cur.lastrowid
             self._entries.append((doc_id, text, meta_json, None))
 
         self._entry_map[doc_id] = self._entries[-1]
@@ -244,30 +275,32 @@ class VectorStore:
             eng = engine or self.engine
             texts = [t for t, _ in normalized]
             vecs = eng.embed_batch(texts)
-            with sqlite3.connect(self.db_path) as conn:
-                for i, (text, meta) in enumerate(normalized):
-                    meta_json = _json_dumps(meta or {})
-                    blob = vector_to_blob(vecs[i])
-                    cur = conn.execute(
-                        "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
-                        (text, meta_json, blob),
-                    )
-                    doc_id = cur.lastrowid
-                    ids.append(doc_id)
-                    self._entries.append((doc_id, text, meta_json, vecs[i]))
-                    self._entry_map[doc_id] = self._entries[-1]
+            conn = self._conn
+            for i, (text, meta) in enumerate(normalized):
+                meta_json = _json_dumps(meta or {})
+                blob = vector_to_blob(vecs[i])
+                cur = conn.execute(
+                    "INSERT INTO documents (text, metadata, embedding) VALUES (?, ?, ?)",
+                    (text, meta_json, blob),
+                )
+                doc_id = cur.lastrowid
+                ids.append(doc_id)
+                self._entries.append((doc_id, text, meta_json, vecs[i]))
+                self._entry_map[doc_id] = self._entries[-1]
+            conn.commit()
         else:
-            with sqlite3.connect(self.db_path) as conn:
-                for text, meta in normalized:
-                    meta_json = _json_dumps(meta or {})
-                    cur = conn.execute(
-                        "INSERT INTO documents (text, metadata) VALUES (?, ?)",
-                        (text, meta_json),
-                    )
-                    doc_id = cur.lastrowid
-                    ids.append(doc_id)
-                    self._entries.append((doc_id, text, meta_json, None))
-                    self._entry_map[doc_id] = self._entries[-1]
+            conn = self._conn
+            for text, meta in normalized:
+                meta_json = _json_dumps(meta or {})
+                cur = conn.execute(
+                    "INSERT INTO documents (text, metadata) VALUES (?, ?)",
+                    (text, meta_json),
+                )
+                doc_id = cur.lastrowid
+                ids.append(doc_id)
+                self._entries.append((doc_id, text, meta_json, None))
+                self._entry_map[doc_id] = self._entries[-1]
+            conn.commit()
 
         # BM25 index
         if self._bm25 is not None:
@@ -365,8 +398,9 @@ class VectorStore:
         if not entry:
             return False
         meta_json = _json_dumps(metadata)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("UPDATE documents SET metadata = ? WHERE id = ?", (meta_json, doc_id))
+        conn = self._conn
+        conn.execute("UPDATE documents SET metadata = ? WHERE id = ?", (meta_json, doc_id))
+        conn.commit()
         # 更新内存
         self._entry_map[doc_id] = (entry[0], entry[1], meta_json, entry[3])
         for i, e in enumerate(self._entries):
@@ -376,8 +410,9 @@ class VectorStore:
         return True
 
     def delete(self, doc_id: int) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        conn = self._conn
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        conn.commit()
         self._entries = [e for e in self._entries if e[0] != doc_id]
         self._entry_map.pop(doc_id, None)
         if self._bm25 is not None:
@@ -415,10 +450,11 @@ class VectorStore:
         texts = [t for _, t in to_embed]
         vecs = eng.embed_batch(texts)
 
-        with sqlite3.connect(self.db_path) as conn:
-            for i, (mid, _) in enumerate(to_embed):
-                blob = vector_to_blob(vecs[i])
-                conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (blob, mid))
+        conn = self._conn
+        for i, (mid, _) in enumerate(to_embed):
+            blob = vector_to_blob(vecs[i])
+            conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (blob, mid))
+        conn.commit()
 
         # Reload
         self._load_all()

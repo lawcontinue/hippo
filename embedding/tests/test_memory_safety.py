@@ -25,6 +25,9 @@ def store():
     os.close(fd)
     s = VectorStore(path, mode="sparse")
     yield s
+    # Close the SQLite connection before deleting the .db, otherwise Windows
+    # raises WinError 32 because the file is still locked by the connection.
+    s.close()
     if os.path.exists(path):
         os.unlink(path)
 

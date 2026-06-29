@@ -173,15 +173,15 @@ class TestModeComparison:
             yield d
 
     def _evaluate_mode(self, mode, docs, queries, tmp_dir, label):
-        store = _make_store(mode, docs, tmp_dir + f"/{mode}_{label}")
-        hit1, hit3 = 0, 0
-        for query, expected_idx in queries:
-            expected_id = _doc_id_at_index(store, expected_idx)
-            results = store.search(query, top_k=3)
-            hit1 += _hits(results, expected_id, 1)
-            hit3 += _hits(results, expected_id, 3)
-        n = len(queries)
-        return hit1 / n, hit3 / n
+        with _make_store(mode, docs, tmp_dir + f"/{mode}_{label}") as store:
+            hit1, hit3 = 0, 0
+            for query, expected_idx in queries:
+                expected_id = _doc_id_at_index(store, expected_idx)
+                results = store.search(query, top_k=3)
+                hit1 += _hits(results, expected_id, 1)
+                hit3 += _hits(results, expected_id, 3)
+            n = len(queries)
+            return hit1 / n, hit3 / n
 
     def test_comparison_table(self, tmp_dir):
         """Print comparison table for all modes × languages."""
@@ -233,20 +233,19 @@ class TestPerformance:
     def _bench_mode(self, mode, docs, tmp_dir, runs=10):
         db = os.path.join(tmp_dir, f"perf_{mode}_{len(docs)}.db")
         engine = MockEngine(dim=32)
-        store = VectorStore(db_path=db, embedding_engine=engine, mode=mode)
+        with VectorStore(db_path=db, embedding_engine=engine, mode=mode) as store:
+            # Bulk add (batch)
+            items = [(d, {}) for d in docs]
+            store.add_batch(items)
 
-        # Bulk add (batch)
-        items = [(d, {}) for d in docs]
-        store.add_batch(items)
+            query = "机器学习算法优化"
+            latencies = []
+            for _ in range(runs):
+                t0 = time.perf_counter()
+                store.search(query, top_k=10)
+                latencies.append((time.perf_counter() - t0) * 1000)
 
-        query = "机器学习算法优化"
-        latencies = []
-        for _ in range(runs):
-            t0 = time.perf_counter()
-            store.search(query, top_k=10)
-            latencies.append((time.perf_counter() - t0) * 1000)
-
-        return statistics.mean(latencies), statistics.stdev(latencies) if len(latencies) > 1 else 0
+            return statistics.mean(latencies), statistics.stdev(latencies) if len(latencies) > 1 else 0
 
     def test_performance_table(self, tmp_dir):
         print(f"\n{'='*60}")
@@ -368,19 +367,19 @@ def test_summary_score():
     # Performance: check 1K docs as proxy
     with tempfile.TemporaryDirectory() as d:
         docs = [f"测试文档variant_{i}" for i in range(1000)]
-        store = _make_store("hybrid", docs, d + "/score")
-        lat = []
-        for _ in range(10):
-            t0 = time.perf_counter()
-            store.search("测试文档", top_k=10)
-            lat.append((time.perf_counter() - t0) * 1000)
-        avg = statistics.mean(lat)
-        if avg < 5:
-            score += 30
-        elif avg < 50:
-            score += 15
-        else:
-            score += 5
+        with _make_store("hybrid", docs, d + "/score") as store:
+            lat = []
+            for _ in range(10):
+                t0 = time.perf_counter()
+                store.search("测试文档", top_k=10)
+                lat.append((time.perf_counter() - t0) * 1000)
+            avg = statistics.mean(lat)
+            if avg < 5:
+                score += 30
+            elif avg < 50:
+                score += 15
+            else:
+                score += 5
 
     # Tokenizer: all 6 tests
     score += 20

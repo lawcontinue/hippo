@@ -164,3 +164,63 @@ class TestDecayLowConfidence:
         meta = json.loads(entry[2])
         assert meta["confidence"] < 0.2
         assert meta["confidence"] == round(0.2 * 0.9, 4)
+
+
+# ---- PR #7 regression tests: decay_low_confidence (Bug #3) ----
+
+class TestDecayDefaultThreshold:
+    """PR #7: decay_low_confidence default threshold = 0.6, cutoff string
+    format compatible with SQLite CURRENT_TIMESTAMP. Pre-fix:
+      - threshold=0.3 default meant model memory (conf=0.5) was never decayed
+      - cutoff used datetime.now(timezone.utc).isoformat() which produces
+        'YYYY-MM-DDTHH:MM:SS+00:00', not comparable to SQLite's
+        'YYYY-MM-DD HH:MM:SS' format → 0 rows returned even with days_old=0
+    """
+
+    def test_default_params_decay_model_memory(self, store):
+        """Default threshold=0.6 must decay model memory with conf=0.5."""
+        doc_id = add_with_source(
+            store, "用户可能喜欢蓝色", source=SOURCE_MODEL, confidence=0.5
+        )
+        # Pre-fix this would return 0 (threshold=0.3 default + 0.5 < 0.3 false path bug)
+        # Post-fix this must return 1 (0.5 < 0.6 default threshold)
+        count = decay_low_confidence(store, days_old=0)
+        assert count == 1
+        # Verify confidence was actually lowered
+        entry = store._entry_map[doc_id]
+        import json
+        meta = json.loads(entry[2])
+        assert meta["confidence"] < 0.5
+        assert meta["confidence"] == round(0.5 * 0.9, 4)
+        assert "last_decayed" in meta
+
+    def test_default_params_skip_user_and_verified(self, store):
+        """User and verified sources must NOT be decayed even with low conf."""
+        user_id = add_with_source(store, "用户说他喜欢蓝色", source=SOURCE_USER, confidence=0.3)
+        veri_id = add_with_source(store, "已验证: 职业是律师", source=SOURCE_VERIFIED, confidence=0.3)
+        add_with_source(store, "推断: 喜欢红色", source=SOURCE_MODEL, confidence=0.3)
+
+        count = decay_low_confidence(store, days_old=0)
+        assert count == 1  # 只 model 被衰减
+        # user / verified 保持原样
+        for doc_id in (user_id, veri_id):
+            entry = store._entry_map[doc_id]
+            import json
+            meta = json.loads(entry[2])
+            assert meta["confidence"] == 0.3, f"source={meta['source']} should not decay"
+
+    def test_threshold_above_confidence_decays(self, store):
+        """Explicit threshold > actual confidence must decay that doc."""
+        add_with_source(store, "doc 1", source=SOURCE_MODEL, confidence=0.4)
+        add_with_source(store, "doc 2", source=SOURCE_MODEL, confidence=0.8)
+        # threshold=0.5: doc 1 (0.4 < 0.5) decays, doc 2 (0.8 >= 0.5) skipped
+        count = decay_low_confidence(store, threshold=0.5, days_old=0)
+        assert count == 1
+
+    def test_idempotent_within_24h(self, store):
+        """24h 幂等保护 — 同一天连续调用只衰减一次。"""
+        add_with_source(store, "doc", source=SOURCE_MODEL, confidence=0.3)
+        first = decay_low_confidence(store, days_old=0)
+        second = decay_low_confidence(store, days_old=0)
+        assert first == 1
+        assert second == 0  # 24h 内的第二次调用应当被幂等保护 skip

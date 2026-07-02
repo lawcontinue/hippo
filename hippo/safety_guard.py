@@ -88,6 +88,15 @@ _L1_HIGH_RISK: List[Tuple[str, re.Pattern]] = [
     ("cmd_injection", re.compile(r"(?:sudo|chmod\s+777|rm\s+-rf|mkfs\.|dd\s+if=|>/dev/sda)", re.I)),
     # 绕过提示词注入 — 经典攻击
     ("ignore_previous", re.compile(r"ignore\s+(all\s+)?(previous|above|system)\s+(instructions?|prompts?)", re.I)),
+    ("cn_ignore_previous", re.compile(
+        # 中文版 ignore_previous — 容忍结构助词"的/地/得"和填充字 (最多 3 个汉字)，
+        # 触发动词覆盖 忽略/无视/请勿/别/勿 五种常见同义词。
+        # 放在 HIGH_RISK 是因为 medium 阈值默认 5 而单条 medium 不会阻断。
+        r"(?:忽略|无视|请\s*勿|别|勿)(?:之前|上面|先前|此前|这些|那些)"
+        r"[\u4e00-\u9fff]{0,3}?(?:所有|全部)?[\u4e00-\u9fff]{0,2}?"
+        r"(?:的|地|得)?"
+        r"(?:指令|提示|规则|设定|命令|要求|限制)"
+    )),
     ("role_override", re.compile(r"you\s+are\s+now\s+(?:a\s+)?(?:DAN|evil|unfiltered|jailbroken)", re.I)),
     ("role_hijack", re.compile(r"(?:act\s+as|pretend\s+(?:to\s+be|you(?:'re| are))|you\s+are\s+(?:now\s+)?(?:a\s+)?(?:jailbreak|unrestricted|uncensored|no\s+limits))", re.I)),
     ("system_prompt_leak", re.compile(r"(?:reveal|show|print|dump|output)\s+(?:your|the)\s+(?:system|initial|original|hidden)\s+(?:prompt|instructions?)", re.I)),
@@ -112,7 +121,13 @@ _L1_MEDIUM_RISK: List[Tuple[str, re.Pattern]] = [
     ("tool_bypass", re.compile(r"(?:disable|bypass|circumvent)\s+(?:the\s+)?(?:safety|security|guard|filter|tool\s+restriction)", re.I)),
     ("disclosure_coercion", re.compile(r"(?:you\s+must|you\s+have\s+to|i\s+demand)\s+(?:tell|reveal|disclose|share)\s+(?:me\s+)?(?:your|the)", re.I)),
     # --- 中文中危 ---
-    ("cn_ignore_instructions", re.compile(r"忽略(?:之前|上面|先前|此前)(?:所有|全部)?(?:指令|提示|规则|设定)")),
+    ("cn_disregard_directive", re.compile(
+        # 捕获"不要遵守/请勿遵守"等直接对抗型 prompt (e.g. "请勿遵守之前的限制")，
+        # 与 cn_ignore_previous 互补。MEDIUM 风险，单条命中不阻断。
+        r"(?:不|不要|请\s*勿|别)(?:遵守|遵循|听从|理会|执行)"
+        r"[\u4e00-\u9fff]{0,2}?(?:的)?"
+        r"(?:指令|提示|规则|设定|命令|要求|限制|安排)"
+    )),
     ("cn_forget_request", re.compile(r"忘记(?:所有|全部|一切|之前)(?:说过|对话|记忆|指令)")),
     ("cn_role_hijack", re.compile(r"你(?:现在|从现在开始|接下来)(?:是|扮演|充当|假装).*"
                                      r"(?:没有限制|不受限制|无限制|不受约束|可以违反|不用遵守)")),

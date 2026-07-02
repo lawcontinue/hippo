@@ -15,6 +15,7 @@ Hippo M0 记忆安全层 — source/confidence 来源审计 + 信任加权搜索
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -235,7 +236,7 @@ def search_with_confidence(
 
 def decay_low_confidence(
     store,
-    threshold: float = 0.3,
+    threshold: float = 0.6,
     days_old: int = 7,
 ) -> int:
     """
@@ -243,16 +244,42 @@ def decay_low_confidence(
 
     Args:
         store: VectorStore 实例
-        threshold: 低于此 confidence 的才衰减
-        days_old: 超过此天数的才衰减
+        threshold: 衰减阈值——confidence **低于**此值才衰减 (inclusive: 等于也衰减).
+                  默认 0.6 覆盖常见 model 记忆默认 confidence=0.5。
+                  历史默认值 0.3 与 model 记忆常见 confidence 失配，导致默认参数下
+                  几乎不会触发任何衰减 (0.5 >= 0.3 永远 skip) — 见 PR #7。
+        days_old: 超过此天数的才衰减 (cutoff = now - days_old)
 
     Returns:
-    衰减的文档数量
+        衰减的文档数量
+
+    Example:
+        # 衰减所有 model 来源、conf < 0.6、超过 7 天的记忆
+        n = decay_low_confidence(store)
+        # 更激进：所有 conf < 0.8、超过 1 天的 model 记忆
+        n = decay_low_confidence(store, threshold=0.8, days_old=1)
     """
     import json as _json
     from datetime import datetime, timedelta
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+    # 修复: cutoff 必须与 SQLite CURRENT_TIMESTAMP 返回的格式完全一致。
+    #
+    # 历史 bug (3 个, 必须同时修才能让函数工作):
+    # (1) 原 cutoff 用 datetime.now(timezone.utc).isoformat() →
+    #     'YYYY-MM-DDTHH:MM:SS+00:00'，与 SQLite 存的 'YYYY-MM-DD HH:MM:SS' 不可比。
+    # (2) SQL `created_at < cutoff` 严格小于，cutoff 必须 ≤ 实际 created_at 才能命中；
+    #     给 cutoff 减 1 秒保证 days_old=0 时"刚插入"的 doc 也能被覆盖。
+    # (3) SQLite CURRENT_TIMESTAMP 的时区行为因平台/编译选项而异:
+    #     - 官方 SQLite (Unix/macOS 多数): UTC
+    #     - 多数 Windows + Python: 本地时间
+    #     - 经实测, 本仓库使用的 SQLite 在 Windows + Python 3.14 下返回本地时间。
+    #     为求最大兼容, 改用 `datetime.now()` (本地 naive), strftime 格式与
+    #     SQLite 一致 ('YYYY-MM-DD HH:MM:SS')。在 SQLite 返回 UTC 的环境下,
+    #     衰减会延迟 8 小时——这是 SQLite 行为差异, 用户可通过环境变量
+    #     `HIPPO_DECAY_USE_UTC=1` 切换回 UTC。
+    use_utc = os.environ.get("HIPPO_DECAY_USE_UTC", "").lower() in ("1", "true", "yes")
+    now_naive = datetime.utcnow() if use_utc else datetime.now()
+    cutoff = (now_naive - timedelta(days=days_old, seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
     count = 0
 
     # Use store.execute() public API rather than reaching into store._conn —
@@ -271,6 +298,9 @@ def decay_low_confidence(
             # system 和 verified 不衰减
             if source in (SOURCE_SYSTEM, SOURCE_VERIFIED, SOURCE_USER):
                 continue
+            # 只衰减 confidence **低于** threshold 的 doc:
+            #   confidence >= threshold → 不衰减 (continue 跳过)
+            #   confidence <  threshold → 进入衰减分支
             if confidence >= threshold:
                 continue
 

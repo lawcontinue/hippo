@@ -28,15 +28,13 @@ import os
 
 # ---- R1: stake gate ----
 # 复用 memory_safety 的 StakeLevel 和 get_stake,避免重复定义
-import sys
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "embedding"))
-from memory_safety import StakeLevel  # noqa: E402
+from hippo.embedding.memory_safety import StakeLevel  # noqa: E402
 
 # Shield P2: 补充高危操作名
 _EXTRA_HIGH_RISK = {
@@ -56,7 +54,7 @@ def get_stake(operation: str) -> StakeLevel:
     攻击者可能构造不在 map 中的操作名来绕过 stake gate。
     Boeing MCAS 教训:治理层给人虚假安全感比没有更危险。
     """
-    from memory_safety import _OPERATION_STAKE_MAP as _MS_MAP
+    from hippo.embedding.memory_safety import _OPERATION_STAKE_MAP as _MS_MAP
     op_lower = operation.lower().strip()
     # 先查高危补充
     if op_lower in _EXTRA_HIGH_RISK:
@@ -274,7 +272,7 @@ class Governance:
         列出所有已知操作及其 stake 级别,显式声明未知操作的处理方式。
         这不是"漏检率百分比"--是"我知道覆盖了什么,承认不知道没覆盖什么"。
         """
-        from memory_safety import _OPERATION_STAKE_MAP as _MS_MAP
+        from hippo.embedding.memory_safety import _OPERATION_STAKE_MAP as _MS_MAP
         combined = {}
         for op, stake in _MS_MAP.items():
             combined[op] = stake.value

@@ -418,11 +418,14 @@ class SafetyGuard:
                 confidence=0.95,
             )
 
-        # L1 中危命中少 → 升L2
-        needs_l2 = len(medium_hits) >= self.config.l1_warn_threshold
+        # L1 中危命中少 → 升L2 (再视 L2 结果决定是否升 L3)
+        # 三态 escalate: None=放行, "l2"=升L2, "l3"=直接升L3
+        escalate = None
+        if len(medium_hits) >= self.config.l1_warn_threshold:
+            escalate = "l2" if self._l2_trained else "l3"
 
         # ===== L2: TF-IDF统计 =====
-        if self._l2_trained:
+        if escalate == "l2" and self._l2_trained:
             l2_score = self._l2.predict_proba(text)
             if l2_score >= self.config.l2_block_confidence:
                 return SafetyResult(
@@ -433,15 +436,20 @@ class SafetyGuard:
                     warnings=warnings + medium_hits,
                     confidence=l2_score,
                 )
-            if l2_score >= self.config.l2_warn_confidence or needs_l2:
-                needs_l2 = False  # L2已处理，标记
+            # L2 clean → 通过; L2 落在 [warn, block) 区间 → 升 L3 (修复 PR #8 bug:
+            # 修复前无条件 needs_l2=False, 导致 L3 永远走不到)
+            if l2_score >= self.config.l2_warn_confidence:
+                escalate = "l3"
+            else:
+                escalate = None
 
-        # L1+L2都干净 → 放行
-        if not needs_l2:
+        # 无需升级 → 放行
+        if escalate is None:
+            max_layer = 3 if self._l3_seeded else (2 if self._l2_trained else 1)
             return SafetyResult(
                 blocked=False,
                 risk_level="safe",
-                layer=2 if self._l2_trained else 1,
+                layer=max_layer,
                 reason="L1 clean" + (" | L2 clean" if self._l2_trained else ""),
                 warnings=warnings + medium_hits,
                 confidence=0.0,
@@ -460,12 +468,12 @@ class SafetyGuard:
                     confidence=l3_sim,
                 )
 
-        # 全部通过
+        # 全部通过 (但已升级到 L3)
         return SafetyResult(
             blocked=False,
             risk_level="safe",
             layer=3 if self._l3_seeded else (2 if self._l2_trained else 1),
-            reason="L1 clean → L2 clean → L3 clean",
+            reason="L1 clean" + (" | L2 clean" if self._l2_trained else "") + (" | L3 clean" if self._l3_seeded else ""),
             warnings=warnings + medium_hits,
             confidence=0.0,
         )

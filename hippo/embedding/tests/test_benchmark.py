@@ -20,9 +20,9 @@ import time
 import numpy as np
 import pytest
 
-from embedding.tokenizer import default_tokenizer, ZH_STOPWORDS, EN_STOPWORDS
-from embedding.bm25 import BM25Index
-from embedding.store import VectorStore
+from hippo.embedding.tokenizer import default_tokenizer, ZH_STOPWORDS, EN_STOPWORDS
+from hippo.embedding.bm25 import BM25Index
+from hippo.embedding.store import VectorStore
 
 
 # ============================================================

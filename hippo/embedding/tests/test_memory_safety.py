@@ -5,8 +5,8 @@ import tempfile
 
 import pytest
 
-from embedding.store import VectorStore
-from embedding.memory_safety import (
+from hippo.embedding.store import VectorStore
+from hippo.embedding.memory_safety import (
     SOURCE_USER,
     SOURCE_MODEL,
     SOURCE_VERIFIED,

@@ -34,7 +34,7 @@ class MockEngine:
 
 # ---- Tokenizer tests ----
 
-from embedding.tokenizer import default_tokenizer
+from hippo.embedding.tokenizer import default_tokenizer
 
 
 def test_default_tokenizer_english():
@@ -56,7 +56,7 @@ def test_default_tokenizer_cjk():
 
 
 def test_custom_tokenizer():
-    from embedding.bm25 import BM25Index
+    from hippo.embedding.bm25 import BM25Index
     bm25 = BM25Index(tokenizer=lambda text: text.split("|"))
     bm25.add("1", "hello|world")
     results = bm25.search("hello", top_k=5)
@@ -66,7 +66,7 @@ def test_custom_tokenizer():
 
 # ---- BM25 tests ----
 
-from embedding.bm25 import BM25Index
+from hippo.embedding.bm25 import BM25Index
 
 
 def test_bm25_basic():
@@ -114,7 +114,7 @@ def test_bm25_stopwords():
 
 # ---- Store tests ----
 
-from embedding.store import VectorStore, Document
+from hippo.embedding.store import VectorStore, Document
 
 
 def _make_store(mode="dense", tmp=None):
@@ -158,7 +158,7 @@ def test_store_hybrid_mode():
 
 # ---- ANN tests ----
 
-from embedding.ann_index import ANNIndex, HAS_HNSW
+from hippo.embedding.ann_index import ANNIndex, HAS_HNSW
 
 
 def test_ann_index_numpy_fallback():
@@ -195,7 +195,7 @@ def test_ann_index_hnswlib():
 
 # ---- Importer tests ----
 
-from embedding.importers import import_csv, import_json
+from hippo.embedding.importers import import_csv, import_json
 
 
 def test_import_csv():
@@ -239,12 +239,12 @@ def test_import_json():
 
 # ---- Engine tests ----
 
-from embedding.engine import EmbeddingEngine
+from hippo.embedding.engine import EmbeddingEngine
 
 
 def test_engine_no_subprocess():
     """Verify engine does not shell out to subprocess."""
-    import embedding.engine as mod
+    import hippo.embedding.engine as mod
     import inspect
     src = inspect.getsource(mod)
     assert "subprocess" not in src
@@ -294,7 +294,7 @@ def test_ann_numpy_delete_skips_deleted():
 
 def test_importer_path_traversal_rejected():
     """P1-3: paths with '..' should be rejected."""
-    from embedding.importers import _validate_path
+    from hippo.embedding.importers import _validate_path
     with pytest.raises(ValueError, match="Path traversal"):
         _validate_path("../etc/passwd")
 
@@ -309,7 +309,7 @@ def test_store_concurrent_writes():
     long-lived self._conn, this only works if (a) check_same_thread=False and
     (b) writes are serialized with self._lock.
     """
-    from embedding.store import VectorStore
+    from hippo.embedding.store import VectorStore
     with tempfile.TemporaryDirectory() as d:
         with VectorStore(
             db_path=os.path.join(d, "conc.db"),
@@ -350,7 +350,7 @@ def test_store_concurrent_search_during_writes():
     but they must not crash with 'database is locked' or return inconsistent
     state. We just verify no exception is raised and results are well-formed.
     """
-    from embedding.store import VectorStore
+    from hippo.embedding.store import VectorStore
     with tempfile.TemporaryDirectory() as d:
         with VectorStore(
             db_path=os.path.join(d, "rw.db"),
@@ -392,7 +392,7 @@ def test_store_concurrent_search_during_writes():
 
 def test_store_after_close_raises_runtime_error():
     """P1 review fix: post-close API calls must raise RuntimeError, not AttributeError."""
-    from embedding.store import VectorStore
+    from hippo.embedding.store import VectorStore
     with tempfile.TemporaryDirectory() as d:
         store = VectorStore(
             db_path=os.path.join(d, "closed.db"),

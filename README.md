@@ -187,9 +187,11 @@ strategy = orchestrator.select(hardware="apple_silicon", language="chinese", tas
 | **Embedding + Hybrid Search** | Dense + BM25 + RRF fusion. SQLite-backed, sub-ms queries. |
 | **Chinese-optimized BM25** | Built-in tokenizer with stop words. No jieba needed. |
 | **ANN Index** | Approximate nearest neighbor for large collections (>10K docs). |
-| **Pipeline Parallelism** | Split any GGUF model across N machines. Mac + PC mixed. |
+| **Pipeline Parallelism** | Split any GGUF model across N machines. → [hippo-pipeline](https://github.com/lawcontinue/hippo-pipeline) |
 | **Loop Detection** | Jaccard-similarity detector catches semantic repetition. |
 | **OpenAI-Compatible API** | Drop-in `/v1/chat/completions`. Works with LangChain, LlamaIndex. |
+| **SafetyGuard** | 3-layer prompt injection defense: L1 regex → L2 TF-IDF → L3 embedding. |
+| **Eval Toolkit** | Fusion evaluation, drift detection, reward assessment, chaos engineering. |
 | **Auto Memory Budget** | Calculates shard splits from available VRAM automatically. |
 
 ## When to use Hippo
@@ -265,9 +267,41 @@ from hippo.embedding import VectorStore
 ## Roadmap
 
 - **v0.3**: ANN index + Chinese tokenizer + hybrid RRF + sparse default ✅
+- **v0.3.2**: SafetyGuard CN L1 fix + path unification + eval toolkit ✅
 - **v0.4**: Built-in embedding models (bge-small-zh 5ms sweet spot), reranker, real-time routing (<10ms)
 - **v0.5**: Agent memory layer (embedding-backed episodic memory) — [Design Doc](docs/V05_AGENT_MEMORY_DESIGN.md)
 - **v0.6**: Multi-shard support (>2 devices), speculative decoding
+
+## Evaluation Toolkit
+
+`hippo.eval` provides deterministic evaluation for AI agent quality — no LLM-as-judge circularity.
+
+```python
+from hippo.eval import evaluate, DriftDetector, RewardEvaluator, FaultInjector
+
+# 1. Rule-based quality gate (batch filter, borderline → LLM)
+result = evaluate("your text here")
+print(result.verdict)  # pass / needs_review / reject
+
+# 2. Distribution drift detection (KL/JS divergence)
+detector = DriftDetector()
+detector.fit_reference(eval_distribution)
+drift = detector.detect(production_distribution)
+print(drift.is_drifted, drift.severity)
+
+# 3. Reward design assessment (sparsity, conflict, Goodhart)
+evaluator = RewardEvaluator()
+report = evaluator.sparsity_report(signals)
+print(report['overall_sparsity'], report['level'])
+
+# 4. Chaos engineering (fault injection)
+injector = FaultInjector.create_enabled()
+injected = injector.inject(step, FaultType.NETWORK_TIMEOUT)
+```
+
+Install with: `pip install hippo-llm[eval]`
+
+See [`examples/quickstart_eval.py`](examples/quickstart_eval.py) for a full runnable demo.
 
 ## Benchmarks
 

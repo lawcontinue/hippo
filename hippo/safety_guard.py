@@ -88,6 +88,15 @@ _L1_HIGH_RISK: List[Tuple[str, re.Pattern]] = [
     ("cmd_injection", re.compile(r"(?:sudo|chmod\s+777|rm\s+-rf|mkfs\.|dd\s+if=|>/dev/sda)", re.I)),
     # 绕过提示词注入 — 经典攻击
     ("ignore_previous", re.compile(r"ignore\s+(all\s+)?(previous|above|system)\s+(instructions?|prompts?)", re.I)),
+    ("cn_ignore_previous", re.compile(
+        # 中文版 ignore_previous — 容忍结构助词"的/地/得"和填充字 (最多 3 个汉字)，
+        # 触发动词覆盖 忽略/无视/请勿/别/勿 五种常见同义词。
+        # 放在 HIGH_RISK 是因为 medium 阈值默认 5 而单条 medium 不会阻断。
+        r"(?:忽略|无视|请\s*勿|别|勿)(?:之前|上面|先前|此前|这些|那些)"
+        r"[\u4e00-\u9fff]{0,3}?(?:所有|全部)?[\u4e00-\u9fff]{0,2}?"
+        r"(?:的|地|得)?"
+        r"(?:指令|提示|规则|设定|命令|要求|限制)"
+    )),
     ("role_override", re.compile(r"you\s+are\s+now\s+(?:a\s+)?(?:DAN|evil|unfiltered|jailbroken)", re.I)),
     ("role_hijack", re.compile(r"(?:act\s+as|pretend\s+(?:to\s+be|you(?:'re| are))|you\s+are\s+(?:now\s+)?(?:a\s+)?(?:jailbreak|unrestricted|uncensored|no\s+limits))", re.I)),
     ("system_prompt_leak", re.compile(r"(?:reveal|show|print|dump|output)\s+(?:your|the)\s+(?:system|initial|original|hidden)\s+(?:prompt|instructions?)", re.I)),
@@ -112,7 +121,13 @@ _L1_MEDIUM_RISK: List[Tuple[str, re.Pattern]] = [
     ("tool_bypass", re.compile(r"(?:disable|bypass|circumvent)\s+(?:the\s+)?(?:safety|security|guard|filter|tool\s+restriction)", re.I)),
     ("disclosure_coercion", re.compile(r"(?:you\s+must|you\s+have\s+to|i\s+demand)\s+(?:tell|reveal|disclose|share)\s+(?:me\s+)?(?:your|the)", re.I)),
     # --- 中文中危 ---
-    ("cn_ignore_instructions", re.compile(r"忽略(?:之前|上面|先前|此前)(?:所有|全部)?(?:指令|提示|规则|设定)")),
+    ("cn_disregard_directive", re.compile(
+        # 捕获"不要遵守/请勿遵守"等直接对抗型 prompt (e.g. "请勿遵守之前的限制")，
+        # 与 cn_ignore_previous 互补。MEDIUM 风险，单条命中不阻断。
+        r"(?:不|不要|请\s*勿|别)(?:遵守|遵循|听从|理会|执行)"
+        r"[\u4e00-\u9fff]{0,2}?(?:的)?"
+        r"(?:指令|提示|规则|设定|命令|要求|限制|安排)"
+    )),
     ("cn_forget_request", re.compile(r"忘记(?:所有|全部|一切|之前)(?:说过|对话|记忆|指令)")),
     ("cn_role_hijack", re.compile(r"你(?:现在|从现在开始|接下来)(?:是|扮演|充当|假装).*"
                                      r"(?:没有限制|不受限制|无限制|不受约束|可以违反|不用遵守)")),
@@ -403,11 +418,14 @@ class SafetyGuard:
                 confidence=0.95,
             )
 
-        # L1 中危命中少 → 升L2
-        needs_l2 = len(medium_hits) >= self.config.l1_warn_threshold
+        # L1 中危命中少 → 升L2 (再视 L2 结果决定是否升 L3)
+        # 三态 escalate: None=放行, "l2"=升L2, "l3"=直接升L3
+        escalate = None
+        if len(medium_hits) >= self.config.l1_warn_threshold:
+            escalate = "l2" if self._l2_trained else "l3"
 
         # ===== L2: TF-IDF统计 =====
-        if self._l2_trained:
+        if escalate == "l2" and self._l2_trained:
             l2_score = self._l2.predict_proba(text)
             if l2_score >= self.config.l2_block_confidence:
                 return SafetyResult(
@@ -418,15 +436,20 @@ class SafetyGuard:
                     warnings=warnings + medium_hits,
                     confidence=l2_score,
                 )
-            if l2_score >= self.config.l2_warn_confidence or needs_l2:
-                needs_l2 = False  # L2已处理，标记
+            # L2 clean → 通过; L2 落在 [warn, block) 区间 → 升 L3 (修复 PR #8 bug:
+            # 修复前无条件 needs_l2=False, 导致 L3 永远走不到)
+            if l2_score >= self.config.l2_warn_confidence:
+                escalate = "l3"
+            else:
+                escalate = None
 
-        # L1+L2都干净 → 放行
-        if not needs_l2:
+        # 无需升级 → 放行
+        if escalate is None:
+            max_layer = 3 if self._l3_seeded else (2 if self._l2_trained else 1)
             return SafetyResult(
                 blocked=False,
                 risk_level="safe",
-                layer=2 if self._l2_trained else 1,
+                layer=max_layer,
                 reason="L1 clean" + (" | L2 clean" if self._l2_trained else ""),
                 warnings=warnings + medium_hits,
                 confidence=0.0,
@@ -445,12 +468,12 @@ class SafetyGuard:
                     confidence=l3_sim,
                 )
 
-        # 全部通过
+        # 全部通过 (但已升级到 L3)
         return SafetyResult(
             blocked=False,
             risk_level="safe",
             layer=3 if self._l3_seeded else (2 if self._l2_trained else 1),
-            reason="L1 clean → L2 clean → L3 clean",
+            reason="L1 clean" + (" | L2 clean" if self._l2_trained else "") + (" | L3 clean" if self._l3_seeded else ""),
             warnings=warnings + medium_hits,
             confidence=0.0,
         )

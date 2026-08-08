@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hippo-llm"
-version = "0.3.1"
+version = "0.3.2"
 description = "Local embedding + hybrid search for AI agents. BM25 + dense + ANN, zero external DB, Chinese-optimized."
 readme = "README.md"
 license = "MIT"

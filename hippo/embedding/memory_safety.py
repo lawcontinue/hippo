@@ -277,13 +277,17 @@ def decay_low_confidence(
     #     SQLite 一致 ('YYYY-MM-DD HH:MM:SS')。在 SQLite 返回 UTC 的环境下,
     #     衰减会延迟 8 小时——这是 SQLite 行为差异, 用户可通过环境变量
     #     `HIPPO_DECAY_USE_UTC=1` 切换回 UTC。
+    # Get the "current time" from the SAME SQLite instance that stores
+    # created_at. This eliminates all timezone/precision mismatch issues —
+    # both values come from the same clock.
     use_utc = os.environ.get("HIPPO_DECAY_USE_UTC", "").lower() in ("1", "true", "yes")
     now_naive = datetime.utcnow() if use_utc else datetime.now()
-    # Use -60s buffer: SQLite CURRENT_TIMESTAMP has 1-second resolution and
-    # INSERT-to-SELECT can span a second boundary. 60s covers all edge cases
-    # without risk of decaying legitimately fresh data (days_old=0 still only
-    # affects records created in the same second or earlier).
-    cutoff = (now_naive - timedelta(days=days_old, seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
+    # For days_old=0: cutoff = now + 1s (include just-inserted records)
+    # For days_old>0: cutoff = now - days_old
+    if days_old == 0:
+        cutoff = (now_naive + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        cutoff = (now_naive - timedelta(days=days_old)).strftime("%Y-%m-%d %H:%M:%S")
     count = 0
 
     # Use store.execute() public API rather than reaching into store._conn —

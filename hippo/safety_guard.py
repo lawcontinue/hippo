@@ -98,6 +98,10 @@ _L1_HIGH_RISK: List[Tuple[str, re.Pattern]] = [
         r"(?:指令|提示|规则|设定|命令|要求|限制)"
     )),
     ("role_override", re.compile(r"you\s+are\s+now\s+(?:a\s+)?(?:DAN|evil|unfiltered|jailbroken)", re.I)),
+    ("cn_role_override", re.compile(
+        r"你(?:现在|从现在开始|接下来)(?:是|扮演|充当|假装)"
+        r".*?(?:DAN|越狱|无限制|不受限|没有限制|解除限制)"
+    )),
     ("role_hijack", re.compile(r"(?:act\s+as|pretend\s+(?:to\s+be|you(?:'re| are))|you\s+are\s+(?:now\s+)?(?:a\s+)?(?:jailbreak|unrestricted|uncensored|no\s+limits))", re.I)),
     ("system_prompt_leak", re.compile(r"(?:reveal|show|print|dump|output)\s+(?:your|the)\s+(?:system|initial|original|hidden)\s+(?:prompt|instructions?)", re.I)),
     # 编码绕过

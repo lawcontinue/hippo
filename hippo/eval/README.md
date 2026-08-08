@@ -15,12 +15,7 @@ A modular evaluation framework combining deterministic rules, LLM enhancement, d
 ## Quick Start
 
 ```python
-from hippo.eval import (
-    evaluate, Verdict,
-    DriftDetector,
-    generate_report, TaskResult,
-    FaultInjector, FaultType, InjectionStrategy,
-)
+from hippo.eval import evaluate, DriftDetector, FaultInjector, FaultType, InjectionStrategy
 
 # Rule + LLM fusion evaluation
 result = evaluate("Text to evaluate...")
@@ -48,4 +43,4 @@ pip install hippo-llm[eval]  # includes scipy
 
 ## License
 
-Apache 2.0 (following Hippo project license).
+MIT (following Hippo project license).

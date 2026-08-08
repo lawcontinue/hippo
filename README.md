@@ -187,7 +187,7 @@ strategy = orchestrator.select(hardware="apple_silicon", language="chinese", tas
 | **Embedding + Hybrid Search** | Dense + BM25 + RRF fusion. SQLite-backed, sub-ms queries. |
 | **Chinese-optimized BM25** | Built-in tokenizer with stop words. No jieba needed. |
 | **ANN Index** | Approximate nearest neighbor for large collections (>10K docs). |
-| **Pipeline Parallelism** | Split any GGUF model across N machines. → [hippo-pipeline](https://github.com/lawcontinue/hippo-pipeline) |
+| **Pipeline Parallelism** | Split any GGUF model across N machines. Moved to [hippo-pipeline](https://github.com/lawcontinue/hippo-pipeline) in v0.3.2. |
 | **Loop Detection** | Jaccard-similarity detector catches semantic repetition. |
 | **OpenAI-Compatible API** | Drop-in `/v1/chat/completions`. Works with LangChain, LlamaIndex. |
 | **SafetyGuard** | 3-layer prompt injection defense: L1 regex → L2 TF-IDF → L3 embedding. |

@@ -24,6 +24,9 @@ class MockEngine:
 
     def embed(self, text):
         vec = np.zeros(self.dim)
+        # NOTE: hash() is randomized per-process (PYTHONHASHSEED).
+        # For dim=8, collision probability is 1/8 per pair. Tests that
+        # rely on distinct vectors may flake ~12.5% of runs.
         vec[hash(text) % self.dim] = 1.0
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec

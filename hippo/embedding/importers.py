@@ -17,9 +17,13 @@ __all__ = ["import_csv", "import_json"]
 
 
 def _validate_path(path: str) -> str:
-    """Resolve and validate file path; reject paths containing '..'."""
-    normalized = os.path.normpath(path)
-    if ".." in normalized.split(os.sep):
+    """Resolve and validate file path; reject path traversal.
+
+    Security: must check the *original* path for '..' BEFORE normpath
+    resolves it away. normpath('/tmp/../etc/passwd') → '/etc/passwd'
+    which contains no '..', making a post-normpath check useless.
+    """
+    if ".." in path:
         raise ValueError(f"Path traversal not allowed: {path}")
     return os.path.abspath(path)
 

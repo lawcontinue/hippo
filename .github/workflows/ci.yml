@@ -31,10 +31,6 @@ jobs:
         run: |
           uv venv
           uv pip install -e ".[dev]"
-          uv pip install mlx mlx-lm || echo "mlx not available (non-ARM runner)"
       - name: Run tests
         run: |
-          if [ -d "pipeline/tests" ]; then
-            uv run pytest pipeline/tests/ -v -k "not mlx" --ignore-glob="*mlx*" || true
-            python3 pipeline/tests/test_phase2.py || true
-          fi
+          uv run pytest hippo/embedding/tests/ tests/ -v --tb=short

@@ -8,6 +8,7 @@ Prerequisites:
 """
 
 import openai
+
 from hippo.embedding import EmbeddingEngine, VectorStore
 
 # 1. Index your documents (one-time)

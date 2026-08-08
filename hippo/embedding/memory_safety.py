@@ -279,7 +279,11 @@ def decay_low_confidence(
     #     `HIPPO_DECAY_USE_UTC=1` 切换回 UTC。
     use_utc = os.environ.get("HIPPO_DECAY_USE_UTC", "").lower() in ("1", "true", "yes")
     now_naive = datetime.utcnow() if use_utc else datetime.now()
-    cutoff = (now_naive - timedelta(days=days_old, seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    # Use -60s buffer: SQLite CURRENT_TIMESTAMP has 1-second resolution and
+    # INSERT-to-SELECT can span a second boundary. 60s covers all edge cases
+    # without risk of decaying legitimately fresh data (days_old=0 still only
+    # affects records created in the same second or earlier).
+    cutoff = (now_naive - timedelta(days=days_old, seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
     count = 0
 
     # Use store.execute() public API rather than reaching into store._conn —

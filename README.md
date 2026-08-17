@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-`pip install hippo-llm` | [中文文档](./README_CN.md) | [Examples](./examples/)
+`pip install hippo-llm` | [中文文档](./README_CN.md) | [Examples](./examples/) | [Agent 跨会话记忆 (DSH)](./dsh-memory/)
 
 Search your documents locally. BM25 works in 30 seconds, upgrade to hybrid when you need it.
 

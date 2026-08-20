@@ -64,8 +64,8 @@ if HIPPO_REPO not in sys.path:
 from hippo.embedding import VectorStore  # noqa: E402
 from hippo.embedding.memory_safety import (  # noqa: E402
     add_with_source,
-    search_with_confidence,
     decay_low_confidence,
+    search_with_confidence,
 )
 
 DB_PATH = os.environ.get(
